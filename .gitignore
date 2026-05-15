@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+features.npy
+kernel_meta/
+
+*.safetensors
+*.bin
+*.pt
+*.pth
