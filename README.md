@@ -33,6 +33,18 @@ Note: replace root with real root.
 
 W4A4 quantization run command：
 
+
+```bash
+  python3 qwen3_w4a4.py 
+  --model_path /root/models/Qwen3-8B \
+  --save_directory /root/models/Qwen3-8B-w4a4 \
+  --calib_file common/qwen_qwen3_cot_w4a4.json \
+  --trust_remote_code True \
+  --batch_size 1
+```
+Note: replace root with real root. This supports Qwen3 models.
+
+
 ```bash
   python3 qwen2.5_w4a4.py 
   --model_path /root/models/Qwen2.5-14B-Instruct \
@@ -43,6 +55,7 @@ W4A4 quantization run command：
 ```
 
 Note: replace root with real root. This supports Qwen2.5 models, such as Qwen2.5-7B and Qwen2.5-14B.
+
 
 ### PPL evaluation
 
