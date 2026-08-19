@@ -4,6 +4,10 @@
 
 A repository for post-training quantization on Ascend NPUs, supporting 8-bit, 4-bit, and mixed-precision quantization for large language models.
 
+## Authors
+
+Hongkun Wang, Xuedong Jiang, Chaiyu Gui, Xiang Xiang (HAIV Lab, https://github.com/HAIV-Lab)
+
 ## Usage
 
 ### Environment setup
