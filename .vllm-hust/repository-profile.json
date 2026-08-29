@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "canonical_registry": "https://github.com/vLLM-HUST/vllm-hust-docs/tree/codex/ecosystem-architecture-reorganization/registry",
+  "repository": "https://github.com/vLLM-HUST/vllm-ascend-quant-hust",
+  "repository_role": "development_tool",
+  "relation_to_runtime": "supports_runtime_delivery",
+  "lifecycle": "incubating",
+  "artifacts": [
+    {
+      "id": "ascend-post-training-quantization",
+      "artifact_type": "tool",
+      "system_role": "model_artifact_preparation",
+      "delivery_model": "source_repository",
+      "execution_planes": ["device", "offline"],
+      "integration_contracts": [],
+      "integration_surfaces": ["msmodelslim quantization CLI", "quantized model artifacts"]
+    }
+  ],
+  "system_boundaries": {
+    "is": ["an offline Ascend post-training quantization and evaluation workflow"],
+    "is_not": [
+      "an in-process vLLM runtime component",
+      "a platform profile or Extension Bundle",
+      "a serving-time quantization compatibility guarantee"
+    ]
+  },
+  "validation": ["python -m py_compile qwen2.5_w4a4.py qwen3_w4a4.py test_ppl.py"],
+  "compatibility_document": "README.md"
+}
