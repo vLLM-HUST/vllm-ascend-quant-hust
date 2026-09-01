@@ -8,3 +8,8 @@ kernel_meta/
 *.bin
 *.pt
 *.pth
+
+.venv/
+dist/
+build/
+*.egg-info/

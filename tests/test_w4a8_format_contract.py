@@ -47,6 +47,7 @@ def _quant_config(quant_type, contract=None):
 
 def _complete_contract():
     return {
+        "schema_version": "vllm-hust.ascend-quant-artifact/v1",
         "weight_packing": "owner-declared",
         "weight_signedness": "owner-declared",
         "weight_scale_granularity": "owner-declared",
@@ -85,6 +86,36 @@ def test_supported_shapes_must_be_a_list(monkeypatch):
 
     with pytest.raises(TypeError, match="supported_shapes"):
         module.validate_w4a8_format_contract(_quant_config("w4a8", contract))
+
+
+def test_unknown_artifact_schema_fails_closed(monkeypatch):
+    module = _load_copy_module(monkeypatch)
+    contract = _complete_contract()
+    contract["schema_version"] = "unknown/v9"
+
+    with pytest.raises(ValueError, match="schema_version"):
+        module.validate_w4a8_format_contract(_quant_config("w4a8", contract))
+
+
+def test_w4a8_contract_is_persisted_for_runtime_validation(tmp_path, monkeypatch):
+    module = _load_copy_module(monkeypatch)
+    source = tmp_path / "config.json"
+    destination = tmp_path / "output" / "config.json"
+    destination.parent.mkdir()
+    source.write_text("{}", encoding="utf-8")
+    quant_description = destination.parent / "quant_model_description.json"
+    quant_description.write_text("{}", encoding="utf-8")
+    contract = _complete_contract()
+
+    module.modify_config_json(
+        str(source),
+        str(destination),
+        _quant_config("w4a8", contract),
+        mindie_format=False,
+    )
+
+    persisted = json.loads(quant_description.read_text(encoding="utf-8"))
+    assert persisted["vllm_hust_artifact_contract"] == contract
 
 
 def test_existing_quant_formats_remain_unchanged(monkeypatch):

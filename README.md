@@ -2,7 +2,18 @@
 
 ## Description 
 
-A repository for post-training quantization on Ascend NPUs, supporting 8-bit, 4-bit, and mixed-precision quantization for large language models.
+An offline toolkit for post-training quantization on Ascend NPUs, supporting
+8-bit, 4-bit, and mixed-precision quantization for large language models.
+
+This repository has two deliberately separate deliverables:
+
+- the scripts in the repository root prepare quantized model artifacts offline;
+- `runtime-extension/` is an independently packaged, currently inert runtime
+  compatibility extension for the vLLM-HUST Extension Manager.
+
+Installing the offline toolkit does not modify or extend vLLM. The runtime
+extension remains `import_only` until vLLM Ascend exposes the versioned loader
+and operator-selection protocols declared in its manifest.
 
 ## Authors
 
@@ -14,7 +25,7 @@ Hongkun Wang, Xuedong Jiang, Chaiyu Gui, Xiang Xiang (HAIV Lab, https://github.c
 
 ```bash
 conda activate vllm-hust-dev
-pip install -r requiremnets.txt
+pip install -r requirements.txt
 ```
 
 ### W8A8 quantization

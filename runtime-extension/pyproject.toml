@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vllm-ascend-quant-ext"
+version = "0.1.0.dev0"
+description = "Runtime compatibility boundary for vLLM-HUST Ascend quantized artifacts"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "vLLM-HUST" }]
+dependencies = []
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+test = ["build>=1.2", "pytest>=8", "ruff>=0.12"]
+
+[project.entry-points."vllm_hust.extension_bundles"]
+"org.vllm-hust.ascend-quant-runtime" = "vllm_ascend_quant_ext"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vllm_ascend_quant_ext"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "pyproject.toml"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88

@@ -1,0 +1,24 @@
+# Ascend Quant Runtime Extension
+
+This directory is an independently installable pre-alpha package for the
+vLLM-HUST Extension Manager. It is not the offline quantization toolkit and it
+does not quantize or rewrite checkpoints.
+
+Its current responsibilities are deliberately limited to validating the
+versioned artifact contract emitted by the offline toolkit and advertising the
+host protocols a future serving integration requires. The manifest marks the
+implementation `import_only`; enabling it produces no vLLM runtime changes.
+
+```bash
+pip install ./runtime-extension
+vllm-hust-ext extension inspect org.vllm-hust.ascend-quant-runtime
+vllm-hust-ext extension check org.vllm-hust.ascend-quant-runtime
+```
+
+A runtime release is blocked until vLLM Ascend provides typed, versioned seams
+for quantized-artifact loading and quantized operator selection. Runtime code
+must fail closed on unknown artifact schemas, dtypes, packing layouts, shapes,
+or operator sets; it must not monkey-patch vLLM internals.
+
+Public package publication is additionally blocked until the repository owners
+declare the package license.

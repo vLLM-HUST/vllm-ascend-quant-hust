@@ -11,6 +11,7 @@ from common.security.path import (
 )
 
 W4A8_FORMAT_FIELDS = (
+    "schema_version",
     "weight_packing",
     "weight_signedness",
     "weight_scale_granularity",
@@ -19,6 +20,8 @@ W4A8_FORMAT_FIELDS = (
     "supported_shapes",
     "operator_name",
 )
+
+W4A8_ARTIFACT_SCHEMA = "vllm-hust.ascend-quant-artifact/v1"
 
 
 def validate_w4a8_format_contract(quant_config):
@@ -43,6 +46,10 @@ def validate_w4a8_format_contract(quant_config):
 
     if not isinstance(contract["supported_shapes"], list):
         raise TypeError("W4A8 supported_shapes must be a non-empty list.")
+    if contract["schema_version"] != W4A8_ARTIFACT_SCHEMA:
+        raise ValueError(
+            "W4A8 schema_version must be " + W4A8_ARTIFACT_SCHEMA + "."
+        )
 
 
 def copy_json(src_path: str, dst_path: str, quant_config, mindie_format: bool):
@@ -74,6 +81,12 @@ def modify_config_json(src_path: str, dst_path: str, quant_config, mindie_format
             "group_size": max(0, quant_config.group_size),
         }
     )
+    quant_type = str(quant_config.model_quant_type.value).strip().lower()
+    if quant_type == "w4a8" or quant_type.startswith("w4a8_"):
+        # Persist the producer-owned contract for the serving-time validator.
+        quantization_config["vllm_hust_artifact_contract"] = dict(
+            quant_config.w4a8_format_contract
+        )
 
     if mindie_format:
         model_config["quantization_config"] = quantization_config
