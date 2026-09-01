@@ -10,6 +10,70 @@ from common.security.path import (
     set_file_stat,
 )
 
+W4A8_FORMAT_FIELDS = (
+    "schema_version",
+    "weight_packing",
+    "weight_signedness",
+    "weight_scale_granularity",
+    "activation_scale_granularity",
+    "zero_point_semantics",
+    "supported_shapes",
+    "operator_name",
+)
+
+W4A8_ARTIFACT_SCHEMA = "vllm-hust.ascend-quant-artifact/v1"
+
+
+def validate_w4a8_format_contract(quant_config):
+    """Reject W4A8 conversion until its artifact contract is explicit."""
+    quant_type = str(quant_config.model_quant_type.value).strip().lower()
+    if not (quant_type == "w4a8" or quant_type.startswith("w4a8_")):
+        return
+
+    contract = getattr(quant_config, "w4a8_format_contract", None)
+    if not isinstance(contract, dict):
+        raise TypeError("W4A8 conversion requires an explicit w4a8_format_contract.")
+
+    missing = []
+    for field in W4A8_FORMAT_FIELDS:
+        value = contract.get(field)
+        if value is None or value == "" or value == []:
+            missing.append(field)
+    if missing:
+        raise ValueError(
+            "W4A8 format contract is incomplete: " + ", ".join(missing)
+        )
+
+    unexpected = sorted(set(contract) - set(W4A8_FORMAT_FIELDS))
+    if unexpected:
+        raise ValueError(
+            "W4A8 format contract contains unsupported fields: "
+            + ", ".join(unexpected)
+        )
+
+    scalar_fields = set(W4A8_FORMAT_FIELDS) - {"supported_shapes"}
+    malformed = sorted(
+        field
+        for field in scalar_fields
+        if not isinstance(contract[field], str) or not contract[field].strip()
+    )
+    if malformed:
+        raise TypeError(
+            "W4A8 format contract fields must be non-empty strings: "
+            + ", ".join(malformed)
+        )
+
+    if not isinstance(contract["supported_shapes"], list) or not all(
+        isinstance(shape, str) and shape for shape in contract["supported_shapes"]
+    ):
+        raise TypeError("W4A8 supported_shapes must be a non-empty list.")
+    if len(contract["supported_shapes"]) != len(set(contract["supported_shapes"])):
+        raise ValueError("W4A8 supported_shapes must not contain duplicates.")
+    if contract["schema_version"] != W4A8_ARTIFACT_SCHEMA:
+        raise ValueError(
+            "W4A8 schema_version must be " + W4A8_ARTIFACT_SCHEMA + "."
+        )
+
 
 def copy_json(src_path: str, dst_path: str, quant_config, mindie_format: bool):
     safe_copy_file(src_path, dst_path)
@@ -17,6 +81,7 @@ def copy_json(src_path: str, dst_path: str, quant_config, mindie_format: bool):
 
 
 def modify_config_json(src_path: str, dst_path: str, quant_config, mindie_format: bool, custom_hook=None):
+    validate_w4a8_format_contract(quant_config)
     model_config = json_safe_load(src_path)
     model_config["quantize"] = str(quant_config.model_quant_type.value).lower()
 
@@ -36,9 +101,15 @@ def modify_config_json(src_path: str, dst_path: str, quant_config, mindie_format
         {
             "kv_quant_type": "C8" if quant_config.use_kvcache_quant else None,
             "fa_quant_type": "FAQuant" if quant_config.use_fa_quant else None,
-            "group_size": quant_config.group_size if quant_config.group_size > 0 else 0,
+            "group_size": max(0, quant_config.group_size),
         }
     )
+    quant_type = str(quant_config.model_quant_type.value).strip().lower()
+    if quant_type == "w4a8" or quant_type.startswith("w4a8_"):
+        # Persist the producer-owned contract for the serving-time validator.
+        quantization_config["vllm_hust_artifact_contract"] = dict(
+            quant_config.w4a8_format_contract
+        )
 
     if mindie_format:
         model_config["quantization_config"] = quantization_config
@@ -57,8 +128,11 @@ DEFAULT_FILE_HOOKS = copy_json
 
 
 def copy_config_files(input_path, output_path, quant_config, mindie_format=None, custom_hooks=None):
+    # Validate before copying any file so a rejected W4A8 conversion cannot
+    # leave a partially materialized output directory.
+    validate_w4a8_format_contract(quant_config)
     for file in os.listdir(input_path):
-        if not (file.endswith(".json") or file.endswith(".py")):
+        if not file.endswith((".json", ".py")):
             continue
         if any(file.endswith(subfix) for subfix in EXCLUDING_SUBFIX_LIST):
             continue
