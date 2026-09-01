@@ -97,6 +97,15 @@ def test_unknown_artifact_schema_fails_closed(monkeypatch):
         module.validate_w4a8_format_contract(_quant_config("w4a8", contract))
 
 
+def test_unknown_artifact_field_fails_closed(monkeypatch):
+    module = _load_copy_module(monkeypatch)
+    contract = _complete_contract()
+    contract["future_layout"] = "unknown"
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        module.validate_w4a8_format_contract(_quant_config("w4a8", contract))
+
+
 def test_w4a8_contract_is_persisted_for_runtime_validation(tmp_path, monkeypatch):
     module = _load_copy_module(monkeypatch)
     source = tmp_path / "config.json"

@@ -36,3 +36,17 @@ def test_missing_layout_fails_closed():
     del contract["weight_packing"]
     with pytest.raises(ArtifactContractError, match="incomplete"):
         ArtifactContractValidator.validate(contract)
+
+
+def test_unknown_contract_field_fails_closed():
+    contract = _contract()
+    contract["future_layout"] = "unknown"
+    with pytest.raises(ArtifactContractError, match="unsupported fields"):
+        ArtifactContractValidator.validate(contract)
+
+
+def test_malformed_operator_fails_closed():
+    contract = _contract()
+    contract["operator_name"] = {"name": "unknown"}
+    with pytest.raises(ArtifactContractError, match="non-empty strings"):
+        ArtifactContractValidator.validate(contract)

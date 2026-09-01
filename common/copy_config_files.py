@@ -44,8 +44,31 @@ def validate_w4a8_format_contract(quant_config):
             "W4A8 format contract is incomplete: " + ", ".join(missing)
         )
 
-    if not isinstance(contract["supported_shapes"], list):
+    unexpected = sorted(set(contract) - set(W4A8_FORMAT_FIELDS))
+    if unexpected:
+        raise ValueError(
+            "W4A8 format contract contains unsupported fields: "
+            + ", ".join(unexpected)
+        )
+
+    scalar_fields = set(W4A8_FORMAT_FIELDS) - {"supported_shapes"}
+    malformed = sorted(
+        field
+        for field in scalar_fields
+        if not isinstance(contract[field], str) or not contract[field].strip()
+    )
+    if malformed:
+        raise TypeError(
+            "W4A8 format contract fields must be non-empty strings: "
+            + ", ".join(malformed)
+        )
+
+    if not isinstance(contract["supported_shapes"], list) or not all(
+        isinstance(shape, str) and shape for shape in contract["supported_shapes"]
+    ):
         raise TypeError("W4A8 supported_shapes must be a non-empty list.")
+    if len(contract["supported_shapes"]) != len(set(contract["supported_shapes"])):
+        raise ValueError("W4A8 supported_shapes must not contain duplicates.")
     if contract["schema_version"] != W4A8_ARTIFACT_SCHEMA:
         raise ValueError(
             "W4A8 schema_version must be " + W4A8_ARTIFACT_SCHEMA + "."
