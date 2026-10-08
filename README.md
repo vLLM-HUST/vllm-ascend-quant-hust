@@ -81,3 +81,10 @@ python test_ppl.py --model_path /root/models/Qwen2.5-7B-w8a8-Instruct-smooth
 ```
 
 Note: run this command in a free npu.
+
+## Canonical runtime MOD metadata
+
+The runtime descriptor component records its canonical identity, directly responsible
+maintainer, advisor status, default-off activation, rollback, scope, and evidence
+qualification in [`runtime-extension/MOD_METADATA.json`](runtime-extension/MOD_METADATA.json).
+`advisor_status: unknown` is not confirmed `none`; no performance claim is implied.
