@@ -1,0 +1,39 @@
+{
+  "canonical_repository": "https://github.com/vLLM-HUST/vllm-ascend-quant-hust/tree/main/runtime-extension",
+  "display_name": "Ascend Quant Runtime Descriptor",
+  "evidence": {
+    "index": "https://github.com/vLLM-HUST/vllm-ascend-quant-hust/tree/main/runtime-extension",
+    "latest_result": "https://github.com/vLLM-HUST/vllm-ascend-quant-hust/tree/main/runtime-extension",
+    "performance_claims": [],
+    "qualification": "unqualified"
+  },
+  "lifecycle": {
+    "activation_contract": "See the runtime-extension manifest and README; discovery alone does not enable this MOD.",
+    "default_enabled": false,
+    "rollback_contract": "Disable the runtime descriptor and return to the unmodified host path.",
+    "status": "experimental"
+  },
+  "metadata_source": {
+    "commit": "7df1647048ac5f05fcc502ce4bea94f26d0f5362",
+    "repository": "vLLM-HUST/vllm-hust-website"
+  },
+  "mod_id": "ascend-quant-runtime-descriptor",
+  "repository": "vllm-ascend-quant-hust",
+  "responsibility": {
+    "advisor_status": "unknown",
+    "advisors": [],
+    "maintainers": [
+      {
+        "github": "aly16-k",
+        "name": "aly16-k"
+      }
+    ],
+    "organization": "vLLM-HUST"
+  },
+  "schema_version": "vllm-hust-mod-metadata-v1",
+  "scope": {
+    "mechanism": "quantized_artifact_validation",
+    "out_of_scope": [],
+    "supported_workloads": []
+  }
+}
