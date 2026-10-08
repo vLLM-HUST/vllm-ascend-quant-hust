@@ -26,3 +26,10 @@ values need an owner-approved allowlist before the manifest may move beyond
 
 Public package publication is additionally blocked until the repository owners
 declare the package license.
+
+## Canonical MOD metadata
+
+Repository identity, direct responsibility, advisor status, default-off activation,
+rollback, scope, and evidence qualification are recorded in
+[`MOD_METADATA.json`](MOD_METADATA.json). `advisor_status: unknown` is not confirmed
+`none`, and this descriptor makes no general online performance claim.
