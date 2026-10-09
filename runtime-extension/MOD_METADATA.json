@@ -20,7 +20,7 @@
   "mod_id": "ascend-quant-runtime-descriptor",
   "repository": "vllm-ascend-quant-hust",
   "responsibility": {
-    "advisor_status": "unknown",
+    "advisor_status": "not_declared",
     "advisors": [],
     "maintainers": [
       {
