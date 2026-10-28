@@ -11,7 +11,7 @@
   MLP experts (`W4A8_DYNAMIC`), int8 GDN `linear_attn` and `self_attn` q/k/v
   (`W8A8_DYNAMIC`), no rotation, `calibImages` calibration. This is the recipe
   behind the published 2026-10-23 single-card SWE prefix-reuse curve; see
-  `docs/evidence/qwen35-w4a8-gdnw8a8-tp1-20261023.md`. The YAML is a verbatim
+  `docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`. The YAML is a verbatim
   copy of the file that produced the checkpoint, pinned by sha256 in the tests.
 - Describe mixed-precision artifacts instead of mislabelling them. `Recipe`
   gains `precision_groups`, `expected_float_patterns`, `expected_shards`,

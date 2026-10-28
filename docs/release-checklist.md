@@ -91,7 +91,7 @@ Packaging
 - [ ] The wheel contains the Toolkit package and the `ascend-quant-toolkit`
       console script only: no `vllm_ascend_quant_ext` module, no `vllm.*` or
       `vllm_hust.*` entry point, no personal-name branding.
-- [ ] The sdist ships `contracts/` and `docs/` (including the evidence records
+- [ ] The sdist ships `contracts/` and `docs/` (including the artifact and release records
       and the artifact-contract 1.1.0 migration note), and never contains the
       `runtime-extension` distribution.
 - [ ] Wheel and sdist pass `twine check`.

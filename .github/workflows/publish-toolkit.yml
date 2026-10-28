@@ -108,7 +108,7 @@ jobs:
           assert not any("/runtime-extension/" in name for name in names)
           assert any(name.endswith("/docs/artifact-contract-v1.1-migration.md") for name in names)
           assert any(
-              name.endswith("/docs/evidence/qwen35-w4a8-gdnw8a8-tp1-20261023.md")
+              name.endswith("/docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md")
               for name in names
           )
           assert any(

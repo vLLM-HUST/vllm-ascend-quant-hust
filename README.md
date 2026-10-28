@@ -52,7 +52,7 @@ ascend-quant-toolkit doctor --path PATH
 | Recipe | Model | Weights / activations | Status |
 |---|---|---|---|
 | `qwen25-w8a8` | Qwen2.5-14B-Instruct | W8A8, SmoothQuant alpha=0.30, C4 calibration | verified on NPU |
-| `qwen35-35b-a3b-w4a8-gdnw8a8` | Qwen3.5-35B-A3B | int4 experts + int8 GDN/attention, no rotation, `calibImages` | artifact verified; accuracy and throughput measured on 1x910B3 |
+| `qwen35-35b-a3b-w4a8-gdnw8a8` | Qwen3.5-35B-A3B | int4 experts + int8 GDN/attention, no rotation, `calibImages` | artifact verified; accuracy measured on 1x910B3, serving curve in the benchmark report |
 
 ### `qwen35-35b-a3b-w4a8-gdnw8a8`
 
@@ -94,7 +94,7 @@ sha256 per shard.
   operating point. At C1 the three compared recipes are within 3%, which is the
   spread of a single 900 s observation; at C16 the difference moves together
   with the KV budget and cannot be attributed to the recipe. See
-  [`docs/evidence/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/evidence/qwen35-w4a8-gdnw8a8-tp1-20261023.md).
+  [`docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md).
 - **No cross-hardware claim.** The artifact was verified and benchmarked on one
   910B3, TP1, with a specific engine revision.
 - **No KV-cache quantization and no speculative-decoding work.** Those belong
@@ -118,7 +118,7 @@ sha256 per shard.
 - **The artifact is pinned to one recipe file.** The packaged YAML is a verbatim
   copy of the file that produced the published checkpoint (its sha256 is
   recorded in `tests/test_qwen35_recipe.py`); editing the YAML changes the
-  artifact identity and needs a new evidence record.
+  artifact identity and needs a new artifact record.
 - **Reproducing the checkpoint needs msModelSlim and an NPU.** The toolkit
   invokes `msmodelslim quant` as an external program; it does not vendor it.
 - **Serving the artifact needs engine work that is not upstream.** The measured

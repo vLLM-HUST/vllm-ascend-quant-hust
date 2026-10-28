@@ -4,7 +4,7 @@ from ascend_quant_toolkit.registry import get_recipe
 
 # The YAML decides what a 24 GB checkpoint contains, so its bytes are pinned.
 # Update this digest only when the recipe body changes on purpose, and record
-# the new artifact in docs/evidence/ with the release that ships it.
+# the new artifact in docs/artifacts/ with the release that ships it.
 CONFIG_SHA256 = "0bcef0f56ddebea8f34841127e6ac5b369ffee20853e5a7d148c344387fd9384"
 
 
