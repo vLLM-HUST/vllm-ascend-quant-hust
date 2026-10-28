@@ -27,6 +27,32 @@ pip install ascend-quant-toolkit==0.5.0
   except `quantize`/`plan` works on a CPU-only machine.
 - From source: `pip install -e . --no-deps`.
 
+## Get the checkpoint, then verify it
+
+If you are here to run the Qwen3.5-35B-A3B W4A8 + GDN W8A8 artifact on an
+Ascend NPU, the path is:
+
+1. **Obtain the artifact** — from your model store, or by running the packaged
+   recipe yourself (see the recipe section below). The 24 GB checkpoint is not
+   redistributed in this package.
+2. **Verify it before serving**, on any machine, with no NPU and no `torch`:
+
+   ```bash
+   ascend-quant-toolkit verify-artifact \
+     --artifact /path/to/Qwen3.5-35B-A3B-W4A8-GDNW8A8 \
+     --recipe qwen35-35b-a3b-w4a8-gdnw8a8
+   ```
+
+   `valid: true` plus the recorded shard inventory means the checkpoint is the
+   one this recipe produced. The verifier exists because the three failures
+   that matter for serving are invisible to `msmodelslim`: a `W8A16` tensor,
+   an `in_proj_qkv` whose fused `in_proj_z` sibling has a different type, and a
+   scope the recipe declared `FLOAT` that was quantized anyway.
+3. **Serve it** — this package does not serve the model. The measured
+   configuration needs the engine revision and local changes recorded in
+   [`docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md)
+   and the benchmark report; they are preconditions, not part of the wheel.
+
 ## What it does
 
 ```bash
@@ -47,6 +73,11 @@ ascend-quant-toolkit doctor --path PATH
 | `export-contract`, `prepare-runtime`, `restore-modelslim` | implemented; **single-scheme artifacts only** |
 | `build-smoothing`, `inspect-smoothing`, `build-online-view` | implemented for the runtime extension's ONLINE path |
 
+`plan` and `quantize` are convenience wrappers around the external `msmodelslim`
+CLI, not a quantizer: `plan` validates the paths and prints the exact command;
+`quantize` runs it and then verifies the result. Quantization itself is
+`msmodelslim` plus the packaged YAML.
+
 ## Recipes
 
 | Recipe | Model | Weights / activations | Status |
@@ -54,7 +85,7 @@ ascend-quant-toolkit doctor --path PATH
 | `qwen25-w8a8` | Qwen2.5-14B-Instruct | W8A8, SmoothQuant alpha=0.30, C4 calibration | verified on NPU |
 | `qwen35-35b-a3b-w4a8-gdnw8a8` | Qwen3.5-35B-A3B | int4 experts + int8 GDN/attention, no rotation, `calibImages` | artifact verified; accuracy measured on 1x910B3, serving curve in the benchmark report |
 
-### `qwen35-35b-a3b-w4a8-gdnw8a8`
+### `qwen35-35b-a3b-w4a8-gdnw8a8` (producing it yourself)
 
 ```bash
 ascend-quant-toolkit plan \
