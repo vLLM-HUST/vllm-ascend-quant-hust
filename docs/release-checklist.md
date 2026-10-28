@@ -1,0 +1,126 @@
+# Release checklist
+
+Both distributions are published from their own tag namespace: the runtime
+extension uses `runtime-v<version>`, the offline Toolkit uses
+`toolkit-v<version>`.
+
+## Runtime Extension
+
+Manifest identity
+
+- [ ] `_version.py`, the Manifest 0.2 `extension_version`, the changelog and the
+      tag agree; the tag has form `runtime-v<version>` and targets a commit
+      contained in `main`.
+- [ ] The `vllm_hust.extension_bundles` registration name is byte-identical to
+      the manifest `extension_id`, and its value is the static manifest locator
+      `vllm_ascend_quant_ext.manifests`.
+- [ ] `kind`, `host`, `runtime`, `lifecycle_owner`, `protocols`, `components`
+      and `permissions` describe the code that actually runs; no fabricated
+      host API or protocol version is declared.
+- [ ] The manifest `host.version_range` admits the tested baseline and the
+      runtime exact-revision gate still fails closed outside it.
+
+Runtime integration
+
+- [ ] `vllm.general_plugins/vllm_ascend_quant` is the only runtime activation
+      entry point; no new `vllm.*` namespace is claimed.
+- [ ] Installation and discovery are default-off and device-free: `torch`,
+      `vllm` and `vllm_ascend` stay unimported.
+- [ ] Frozen vLLM-HUST and vLLM-Ascend-HUST revisions are documented and
+      tested; `verify_host_sources.py` passes for the exact host commits.
+- [ ] Invalid artifact, wrong host revision and duplicate scheme fail closed.
+
+Packaging
+
+- [ ] Wheel and sdist both contain
+      `vllm_ascend_quant_ext/manifests/vllm-hust-extension-v0.2.json`; the
+      retired legacy manifest and the retired PDMix-named scheme module are
+      absent.
+- [ ] `validate-evidence`-style manifest tests cover fields, enumerations,
+      entry-point identity, implementation references and permission sets.
+- [ ] Wheel and sdist pass `twine check`.
+- [ ] Wheel contains no Toolkit calibration/conversion code or model data.
+- [ ] Isolated install/discovery/uninstall verification passes
+      (`runtime-extension/tools/verify_release.py`).
+- [ ] Unit tests and Ruff pass on Python 3.10, 3.11 and 3.12. The ONLINE replay
+      suite needs a torch runtime: it skips (visibly, via `pytest.importorskip`)
+      on the torch-free CI runner and is covered by the frozen-host NPU gate
+      record instead, while the admission half runs everywhere.
+
+Lifecycle and evidence
+
+- [ ] Enable intent, disable plus new-process rollback, forget and uninstall
+      leave no residual bundle registration or stale enabled intent. The
+      Manifest 0.2 lifecycle was exercised with the Extension Manager at
+      `cf1ea71` in an isolated client environment (see the v1 evidence record);
+      re-run it against the released Manager client before publishing.
+- [ ] Real NPU validation records the exact wheel hash, host revisions, model,
+      accelerator and raw log paths.
+- [ ] The frozen-host gate (`runtime-extension/tools/npu_e2e.py`) ran against
+      the exact wheel with no failed phase: the wheel resolved from
+      `site-packages`, the loader activation record was captured, the
+      disabled contrast left the scheme unregistered, two identical completions
+      matched, uninstall left no entry point, and the artifact hashes were
+      unchanged.
+- [ ] Release notes and the manifest qualification block do not claim matched
+      performance evidence that was not measured.
+
+Publishing
+
+- [ ] Distributions are rehearsed on TestPyPI first, then installed from
+      TestPyPI at the exact version and re-verified before PyPI.
+- [ ] PyPI release uses GitHub OIDC Trusted Publishing; no token is stored.
+
+## Toolkit
+
+Identity and artifact scope
+
+- [ ] Every `mixed_precision` recipe is verified with `verify-artifact` against
+      a real artifact, and its evidence record pins the recipe sha256, shard
+      count, shard bytes and per-shard digests. Such recipes never run
+      `prepare-runtime`/`export-contract`: artifact contract 1.1.0 carries one
+      scheme, and the runtime validator accepts one `runtime_quant_type`.
+
+- [ ] `ascend_quant_toolkit.__version__`, the changelog and the tag agree; the
+      tag has form `toolkit-v<version>` and targets a commit contained in
+      `main`. `pyproject.toml` declares the version dynamically from
+      `__version__`, so the two cannot drift.
+
+Packaging
+
+- [ ] The wheel contains the Toolkit package and the `ascend-quant-toolkit`
+      console script only: no `vllm_ascend_quant_ext` module, no `vllm.*` or
+      `vllm_hust.*` entry point, no personal-name branding.
+- [ ] The sdist ships `contracts/` and `docs/` (including the evidence records
+      and the artifact-contract 1.1.0 migration note), and never contains the
+      `runtime-extension` distribution.
+- [ ] Wheel and sdist pass `twine check`.
+- [ ] The built wheel installs with `--no-deps` and its console script runs:
+      the Toolkit runtime modules import the standard library only.
+- [ ] Unit tests and Ruff pass on Python 3.10, 3.11 and 3.12. The job installs
+      `numpy` and `safetensors` for the attachment fixtures even though the
+      distribution itself declares no runtime dependency, and the job installs
+      no torch: the attachment reader widens BF16 weights out of the safetensors
+      payload instead of asking a framework backend for them.
+
+Evidence
+
+- [ ] A Toolkit change that alters what the runtime consumes (`build-smoothing`
+      factors, `build-online-view` output) is covered by the frozen-host gate
+      record that used it, and that record names the Toolkit version.
+
+Publishing
+
+- [ ] Distributions are rehearsed on TestPyPI first, then installed from
+      TestPyPI at the exact version and re-verified before PyPI.
+- [ ] PyPI and TestPyPI register a pending publisher for
+      `publish-toolkit.yml`/`rehearse-toolkit-testpypi.yml` and the `pypi`/
+      `testpypi` environments, bound to this repository
+      (`vLLM-HUST/vllm-ascend-quant-hust`) and the `toolkit-v*` tag; the release
+      uses GitHub OIDC and stores no token. A publisher still bound to the
+      former personal repository cannot publish this one's workflow.
+
+PyPI artifacts are immutable. A failed release is corrected with a new version
+or yanked according to project policy; files are never overwritten and a burned
+version is never reused.
+

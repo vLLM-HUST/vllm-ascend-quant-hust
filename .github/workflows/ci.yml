@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  toolkit:
+    name: Toolkit (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test and build dependencies
+        # numpy/safetensors: the attachment suite builds real safetensors
+        # fixtures. The Toolkit itself is installed with --no-deps because the
+        # wheel must work with no third-party dependency at all.
+        run: |
+          python -m pip install --upgrade pip setuptools wheel build pytest packaging ruff twine jsonschema numpy safetensors
+      - name: Install the Toolkit
+        run: python -m pip install -e . --no-deps --no-build-isolation
+      - name: Test offline Toolkit
+        run: python -m pytest -q tests
+      # The runtime extension is a separate deliverable with its own release
+      # workflow, but its tests are torch-free and run here so the shared
+      # checkout cannot break them silently.
+      - name: Test runtime extension
+        run: python -m pytest -q runtime-extension/tests
+      - name: Lint Toolkit sources
+        run: python -m ruff check src tests
+      - name: Build the Toolkit wheel and sdist
+        run: python -m build --wheel --sdist --no-isolation --outdir dist .
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Verify the distributions carry the Toolkit only
+        run: |
+          python - <<'PY'
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("ascend_quant_toolkit-*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert any(name.startswith("ascend_quant_toolkit/") for name in names)
+              assert "ascend_quant_toolkit/scope.py" in names
+              assert "ascend_quant_toolkit/recipes/yaml/qwen35-35b-a3b-w4a8-gdnw8a8.yaml" in names
+              assert not any(name.startswith("vllm_ascend_quant_ext/") for name in names)
+              assert not any(name.startswith("runtime-extension/") for name in names)
+              entry = next(
+                  name for name in names if name.endswith(".dist-info/entry_points.txt")
+              )
+              contents = archive.read(entry).decode("utf-8")
+          assert "ascend-quant-toolkit = ascend_quant_toolkit.cli:main" in contents
+          assert "qwen35-35b-a3b-w4a8-gdnw8a8" in contents
+          assert "[vllm.general_plugins]" not in contents
+          assert "[vllm_hust.extension_bundles]" not in contents
+
+          sdist = next(Path("dist").glob("ascend_quant_toolkit-*.tar.gz"))
+          with tarfile.open(sdist, "r:gz") as archive:
+              names = archive.getnames()
+          assert not any("/runtime-extension/" in name for name in names)
+          assert any(name.endswith("/docs/artifact-contract-v1.1-migration.md") for name in names)
+          assert any(
+              name.endswith("/docs/evidence/qwen35-w4a8-gdnw8a8-tp1-20261023.md")
+              for name in names
+          )
+          assert any(
+              name.endswith("/contracts/ascend-quant-artifact-v1.schema.json") for name in names
+          )
+          assert any(
+              name.endswith("/contracts/ascend-quant-evidence-v1.schema.json") for name in names
+          )
+          print("distributions verified")
+          PY
+      - name: Install the built wheel in an isolated, dependency-free environment
+        run: |
+          python -m venv /tmp/toolkit-install
+          /tmp/toolkit-install/bin/python -m pip install --quiet --upgrade pip
+          /tmp/toolkit-install/bin/python -m pip install --quiet --no-deps \
+            dist/ascend_quant_toolkit-*.whl
+          /tmp/toolkit-install/bin/ascend-quant-toolkit list-recipes
+          /tmp/toolkit-install/bin/ascend-quant-toolkit --help
