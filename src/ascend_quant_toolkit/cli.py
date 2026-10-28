@@ -64,6 +64,10 @@ def command_quantize(args: argparse.Namespace) -> int:
     if request.recipe.mixed_precision:
         # Artifact contract 1.1.0 is single-scheme: a mixed checkpoint cannot be
         # stamped with one runtime type. Verify it against its recipe instead.
+        inspection = inspect_artifact(request.output_path)
+        if not inspection["valid"]:
+            print(json.dumps(inspection, ensure_ascii=False, indent=2), file=sys.stderr)
+            return 2
         destination = write_manifest(
             request.output_path,
             request.recipe,
