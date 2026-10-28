@@ -48,10 +48,15 @@ Ascend NPU, the path is:
    that matter for serving are invisible to `msmodelslim`: a `W8A16` tensor,
    an `in_proj_qkv` whose fused `in_proj_z` sibling has a different type, and a
    scope the recipe declared `FLOAT` that was quantized anyway.
-3. **Serve it** — this package does not serve the model. The measured
-   configuration needs the engine revision and local changes recorded in
+3. **Serve it** — this package does not serve the model, but the checkpoint
+   needs no conversion: vLLM-Ascend recognises `quant_model_description.json`
+   and selects a quantization scheme per tensor, so the mixed
+   `W4A8`/`W8A8`/`FLOAT` recipe loads as written. Use a vLLM-Ascend build that
+   supports Qwen3.5-35B-A3B. The engine revision used for the published curve,
+   and the MTP patches needed to reproduce it with speculative decoding, are
+   recorded in
    [`docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md)
-   and the benchmark report; they are preconditions, not part of the wheel.
+   and the benchmark report.
 
 ## What it does
 
@@ -152,13 +157,17 @@ sha256 per shard.
   artifact identity and needs a new artifact record.
 - **Reproducing the checkpoint needs msModelSlim and an NPU.** The toolkit
   invokes `msmodelslim quant` as an external program; it does not vendor it.
-- **Serving the artifact needs engine work that is not upstream.** The measured
-  curve ran vLLM `0.28.1.post1.dev143+gf18cf803c` and vLLM-Ascend
-  `0.25.1rc2.dev125+hust.20260903.4.g74f0c0a27` with three local engine
-  changes (MTP contract, `npugraph_ex` attribute shim, and one recorded in the
-  benchmark report). The `npugraph_ex` shim is inert for this artifact because
-  it contains zero `W8A16` entries. Quantization itself does not need these
-  patches.
+- **Reproducing the published curve needs engine work that is not upstream.**
+  Loading the weights does not: the modelslim path reads per-tensor types, and
+  none of the patches touches it. The measured run used vLLM
+  `0.28.1.post1.dev143+gf18cf803c` and vLLM-Ascend
+  `0.25.1rc2.dev125+hust.20260903.4.g74f0c0a27` with two MTP contract patches
+  and the `npugraph_ex` attribute shim (the three local changes recorded in the
+  benchmark report). The MTP patches are exercised only when speculative
+  decoding is enabled, and the `npugraph_ex` shim never activates for this
+  artifact because it has zero `W8A16` entries. Loading without those patches
+  was not exercised on hardware; the measured configuration is the only
+  hardware-verified one.
 
 ## Accuracy
 
