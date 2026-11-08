@@ -1,0 +1,78 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
+#
+# ---- Provenance --------------------------------------------------------------
+# Source: quant-Qwen3.5-35B-A3B/qwen3_5_35b_a3b_w8a8_norot.yaml
+# sha256(d666ef936d89bf41ea804d0b678e90ba86bbde74807bca1d3b9c4597b020d1db)
+# The body below is that file verbatim; only this header differs. It produced
+# the published Qwen3.5-35B-A3B W4A8 + GDN W8A8 artifact
+# (W4A8_DYNAMIC experts, W8A8_DYNAMIC GDN/attention, FLOAT elsewhere).
+#
+# metadata.config_id is deliberately left as Qwen3_5_moe_w8a8_norot: it is the
+# identity recorded in that artifact's own quantization description, so renaming
+# it here would break the chain back to the published checkpoint.
+# -----------------------------------------------------------------------------
+apiversion: multimodal_vlm_modelslim_v1
+metadata:
+  config_id: Qwen3_5_moe_w8a8_norot
+  score: 90
+  verified_model_types:
+    - Qwen3.5-35B-A3B
+  label:
+    w_bit: 8
+    a_bit: 8
+    is_sparse: False
+    kv_cache: False
+
+default_w4a8_dynamic: &default_w4a8_dynamic
+  act:
+    scope: "per_token"
+    dtype: "int8"
+    symmetric: True
+    method: "minmax"
+  weight:
+    scope: "per_channel"
+    dtype: "int4"
+    symmetric: True
+    method: "ssz"
+
+default_w8a8_dynamic: &default_w8a8_dynamic
+  act:
+    scope: "per_token"
+    dtype: "int8"
+    symmetric: True
+    method: "minmax"
+  weight:
+    scope: "per_channel"
+    dtype: "int8"
+    symmetric: True
+    method: "ssz"
+
+spec:
+  process:
+    # 注意：没有 quarot 一步
+    - type: "linear_quant"
+      qconfig: *default_w8a8_dynamic
+      include:
+        - "*self_attn*"
+      exclude:
+        - "*self_attn.o_proj*"
+        - "mtp*"
+    - type: "linear_quant"
+      qconfig: *default_w8a8_dynamic
+      include:
+        - "*linear_attn.in_proj_qkv"
+        - "*linear_attn.in_proj_z"
+        - "*linear_attn.out_proj"
+      exclude:
+        - "mtp*"
+    - type: "linear_quant"
+      qconfig: *default_w4a8_dynamic
+      include:
+        - "*mlp.experts*"
+      exclude:
+        - "mtp*"
+  save:
+    - type: "ascendv1_saver"
+      part_file_size: 4
+  dataset: "calibImages"
+  default_text: "Describe this image in detail."

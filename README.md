@@ -1,90 +1,220 @@
 # vllm-ascend-quant-hust
 
-## Description 
+An offline post-training quantization toolkit for Ascend NPUs, plus a separately
+packaged runtime compatibility extension.
 
-An offline toolkit for post-training quantization on Ascend NPUs, supporting
-8-bit, 4-bit, and mixed-precision quantization for large language models.
+This repository is the canonical source of the `ascend-quant-toolkit` PyPI
+distribution. Versions are published from here under the `toolkit-v<version>`
+tag; the former personal repository keeps its already-published files but no
+longer publishes new versions.
 
-This repository has two deliberately separate deliverables:
+| Deliverable | Distribution | Stable? | What it is |
+|---|---|---|---|
+| Offline quantization toolkit | `ascend-quant-toolkit` on PyPI (this README) | 0.5.0 | Recipes, artifact inspection, precision-scope verification, contract export |
+| Runtime compatibility extension | `vllm-ascend-quant-ext` | frozen at 0.4.1a4 | Inert, default-off vLLM plugin; **not** part of the 0.5.0 release |
+| Legacy scripts | none | unversioned | `qwen2.5_w4a4.py`, `qwen3_w4a4.py`, `test_ppl.py` — kept for reproducibility, not packaged |
+| Legacy YAMLs | none | unversioned | `qwen2.5-14b-w8a8-pdmix-a030.yaml`, `qwen_w8a8.yaml` — superseded by the packaged recipes |
 
-- the scripts in the repository root prepare quantized model artifacts offline;
-- `runtime-extension/` is an independently packaged, currently inert runtime
-  compatibility extension for the vLLM-HUST Extension Manager.
+## Install
 
-Installing the offline toolkit does not modify or extend vLLM. The runtime
-extension remains `import_only` until vLLM Ascend exposes the versioned loader
-and operator-selection protocols declared in its manifest.
+```bash
+pip install ascend-quant-toolkit==0.5.0
+```
+
+- Python >= 3.10, `py3-none-any` wheel, **zero runtime dependencies**.
+- Nothing in the wheel imports `torch`, `vllm`, `vllm_ascend` or `msmodelslim`.
+  Running a quantization needs `msmodelslim` installed separately; everything
+  except `quantize`/`plan` works on a CPU-only machine.
+- From source: `pip install -e . --no-deps`.
+
+## Get the checkpoint, then verify it
+
+If you are here to run the Qwen3.5-35B-A3B W4A8 + GDN W8A8 artifact on an
+Ascend NPU, the path is:
+
+1. **Obtain the artifact** — from your model store, or by running the packaged
+   recipe yourself (see the recipe section below). The 24 GB checkpoint is not
+   redistributed in this package.
+2. **Verify it before serving**, on any machine, with no NPU and no `torch`:
+
+   ```bash
+   ascend-quant-toolkit verify-artifact \
+     --artifact /path/to/Qwen3.5-35B-A3B-W4A8-GDNW8A8 \
+     --recipe qwen35-35b-a3b-w4a8-gdnw8a8
+   ```
+
+   `valid: true` plus the recorded shard inventory means the checkpoint is the
+   one this recipe produced. The verifier exists because the three failures
+   that matter for serving are invisible to `msmodelslim`: a `W8A16` tensor,
+   an `in_proj_qkv` whose fused `in_proj_z` sibling has a different type, and a
+   scope the recipe declared `FLOAT` that was quantized anyway.
+3. **Serve it** — this package does not serve the model, but the checkpoint
+   needs no conversion: vLLM-Ascend recognises `quant_model_description.json`
+   and selects a quantization scheme per tensor, so the mixed
+   `W4A8`/`W8A8`/`FLOAT` recipe loads as written. Use a vLLM-Ascend build that
+   supports Qwen3.5-35B-A3B. The engine revision used for the published curve,
+   and the MTP patches needed to reproduce it with speculative decoding, are
+   recorded in
+   [`docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md)
+   and the benchmark report.
+
+## What it does
+
+```bash
+ascend-quant-toolkit list-recipes          # what ships
+ascend-quant-toolkit plan --recipe ...     # print the exact msModelSlim command, run nothing
+ascend-quant-toolkit quantize --recipe ... # run msModelSlim, then verify the artifact
+ascend-quant-toolkit inspect-model --model PATH
+ascend-quant-toolkit verify-artifact --artifact PATH --recipe NAME [--hash]
+ascend-quant-toolkit export-contract --model PATH --recipe NAME   # single-scheme artifacts only
+ascend-quant-toolkit doctor --path PATH
+```
+
+| Command | Status |
+|---|---|
+| `list-recipes`, `plan` | implemented, CPU-only |
+| `inspect-model`, `verify-artifact`, `doctor` | implemented, CPU-only, run against real artifacts |
+| `quantize` | implemented; executes the external `msmodelslim` CLI on an NPU |
+| `export-contract`, `prepare-runtime`, `restore-modelslim` | implemented; **single-scheme artifacts only** |
+| `build-smoothing`, `inspect-smoothing`, `build-online-view` | implemented for the runtime extension's ONLINE path |
+
+`plan` and `quantize` are convenience wrappers around the external `msmodelslim`
+CLI, not a quantizer: `plan` validates the paths and prints the exact command;
+`quantize` runs it and then verifies the result. Quantization itself is
+`msmodelslim` plus the packaged YAML.
+
+## Recipes
+
+| Recipe | Model | Weights / activations | Status |
+|---|---|---|---|
+| `qwen25-w8a8` | Qwen2.5-14B-Instruct | W8A8, SmoothQuant alpha=0.30, C4 calibration | verified on NPU |
+| `qwen35-35b-a3b-w4a8-gdnw8a8` | Qwen3.5-35B-A3B | int4 experts + int8 GDN/attention, no rotation, `calibImages` | artifact verified; accuracy measured on 1x910B3, serving curve in the benchmark report |
+
+### `qwen35-35b-a3b-w4a8-gdnw8a8` (producing it yourself)
+
+```bash
+ascend-quant-toolkit plan \
+  --recipe qwen35-35b-a3b-w4a8-gdnw8a8 \
+  --model  /path/to/Qwen3.5-35B-A3B \
+  --output /path/to/Qwen3.5-35B-A3B-W4A8-GDNW8A8
+
+ascend-quant-toolkit quantize \
+  --recipe qwen35-35b-a3b-w4a8-gdnw8a8 \
+  --model  /path/to/Qwen3.5-35B-A3B \
+  --output /path/to/Qwen3.5-35B-A3B-W4A8-GDNW8A8 \
+  --device npu:0
+
+ascend-quant-toolkit verify-artifact \
+  --artifact /path/to/Qwen3.5-35B-A3B-W4A8-GDNW8A8 \
+  --recipe qwen35-35b-a3b-w4a8-gdnw8a8
+```
+
+The recipe quantizes:
+
+| Scope | Layers x projections | Weight / activation |
+|---|---|---|
+| `mlp.experts` gate/up/down | 40 x 256 experts | int4 / int8 (`W4A8_DYNAMIC`) |
+| `linear_attn` `in_proj_qkv` / `in_proj_z` / `out_proj` | 30 x 3 | int8 / int8 (`W8A8_DYNAMIC`) |
+| `self_attn` q/k/v | 10 x 3 | int8 / int8 (`W8A8_DYNAMIC`) |
+| `self_attn.o_proj`, `linear_attn.in_proj_a` / `in_proj_b`, `shared_expert`, `lm_head`, `visual`, `mtp` | — | FLOAT |
+
+A verified artifact has 6 `quant_model_weights-*.safetensors` shards totalling
+24,047,130,272 bytes and a `quant_model_description.json` histogram of
+`W4A8_DYNAMIC` 122,880 / `W8A8_DYNAMIC` 360 / `FLOAT` 1,611 / `W8A16` 0. The
+recipe pins the shard count and the byte total; `--hash` additionally records a
+sha256 per shard.
+
+## What this does not claim
+
+- **No speed claim.** The published 2026-10-23 curve is a capacity-vs-accuracy
+  operating point. At C1 the three compared recipes are within 3%, which is the
+  spread of a single 900 s observation; at C16 the difference moves together
+  with the KV budget and cannot be attributed to the recipe. See
+  [`docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md`](docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md).
+- **No cross-hardware claim.** The artifact was verified and benchmarked on one
+  910B3, TP1, with a specific engine revision.
+- **No KV-cache quantization and no speculative-decoding work.** Those belong
+  to other teams; MTP appears here only as a serving-side precondition.
+
+## Limitations
+
+- **Mixed-precision artifacts cannot carry a runtime contract.** Artifact
+  contract 1.1.0 has exactly one scheme and the runtime validator accepts one
+  `runtime_quant_type` across all tensors, so `prepare-runtime`,
+  `restore-modelslim` and `export-contract` refuse a checkpoint that mixes
+  quantization types. `quantize` runs `verify-artifact` for such recipes
+  instead. Adding a multi-scheme contract is a schema change and is not planned
+  here.
+- **`W8A16` is refused for this model.** vLLM-Ascend's `npugraph_ex` path hits
+  a `CompilerConfig` attribute this build does not provide, so the recipe sets
+  `forbid_w8a16` and verification fails if any `W8A16` entry appears.
+- **GDN projections are fused at load.** vLLM merges `in_proj_qkv` and
+  `in_proj_z`, so a checkpoint that quantizes only one of them cannot be
+  served. `verify-artifact` enforces the sibling types match, for every recipe.
+- **The artifact is pinned to one recipe file.** The packaged YAML is a verbatim
+  copy of the file that produced the published checkpoint (its sha256 is
+  recorded in `tests/test_qwen35_recipe.py`); editing the YAML changes the
+  artifact identity and needs a new artifact record.
+- **Reproducing the checkpoint needs msModelSlim and an NPU.** The toolkit
+  invokes `msmodelslim quant` as an external program; it does not vendor it.
+- **Reproducing the published curve needs engine work that is not upstream.**
+  Loading the weights does not: the modelslim path reads per-tensor types, and
+  none of the patches touches it. The measured run used vLLM
+  `0.28.1.post1.dev143+gf18cf803c` and vLLM-Ascend
+  `0.25.1rc2.dev125+hust.20260903.4.g74f0c0a27` with two MTP contract patches
+  and the `npugraph_ex` attribute shim (the three local changes recorded in the
+  benchmark report). The MTP patches are exercised only when speculative
+  decoding is enabled, and the `npugraph_ex` shim never activates for this
+  artifact because it has zero `W8A16` entries. Loading without those patches
+  was not exercised on hardware; the measured configuration is the only
+  hardware-verified one.
+
+## Accuracy
+
+Same wikitext-2 protocol (298 chunks of 999 tokens, concurrency 8, bf16 baseline
+in the same session, per-chunk paired ΔNLL):
+
+| Checkpoint | Quantization scope | PPL | vs bf16 |
+|---|---|---|---|
+| bf16 | — | 7.1694 | — |
+| W8A8 | experts + attn q/k/v W8A8 | 7.1750 | +0.08% |
+| experts int4 | experts W4A8 + attn q/k/v W8A8, GDN bf16 | 7.8551 | +9.6% |
+| **this recipe** | above + GDN three projections W8A8 | **7.9070** | +10.3% |
+
+GDN's int8 weights cost +0.66% PPL relative to the same experts-only recipe.
+
+## Runtime extension
+
+`runtime-extension/` is a separate distribution with its own tag namespace
+(`runtime-v<version>`), manifest, and release checklist; the 0.5.0 toolkit
+release does not change it. Its canonical identity, default-off activation and
+rollback are recorded in
+[`runtime-extension/MOD_METADATA.json`](runtime-extension/MOD_METADATA.json).
+`advisor_status: unknown` is not confirmed `none`; no performance claim is
+implied.
+
+## Legacy scripts
+
+The repository root still carries the original research scripts:
+
+```bash
+python3 qwen3_w4a4.py --model_path /root/models/Qwen3-8B \
+  --save_directory /root/models/Qwen3-8B-w4a4 \
+  --calib_file common/qwen_qwen3_cot_w4a4.json --trust_remote_code True --batch_size 1
+
+python test_ppl.py --model_path /root/models/Qwen2.5-7B-Instruct-w8a8
+```
+
+They are not packaged, not covered by the release workflow, and are kept only so
+older results stay reproducible.
+
+## Dependencies and license
+
+- Runtime dependencies: none.
+- Test dependencies: `pytest`, `jsonschema`, `numpy`, `safetensors`.
+- Code: Apache-2.0 (see [`LICENSE`](LICENSE)).
+- External provenance is recorded in [`PROVENANCE.md`](PROVENANCE.md).
 
 ## Authors
 
 Hongkun Wang, Xuedong Jiang, Chaiyu Gui, Xiang Xiang (HAIV Lab, https://github.com/HAIV-Lab)
-
-## Usage
-
-### Environment setup
-
-```bash
-conda activate vllm-hust-dev
-pip install -r requirements.txt
-```
-
-### W8A8 quantization
-
-W8A8 quantization run command：
-
-```bash
-msmodelslim quant \
-  --model_path /root/models/Qwen2.5-7B-Instruct \
-  --save_path /root/models/Qwen2.5-7B-Instruct-w8a8-test \
-  --device npu \
-  --model_type Qwen2.5 \
-  --config_path /root/workspace1/vllm-ascend-quant-hust/qwen_w8a8.yaml \
-  --trust_remote_code True
-```
-
-Note: replace root with real root.
-
-### W4A4 quantization
-
-W4A4 quantization run command：
-
-
-```bash
-  python3 qwen3_w4a4.py 
-  --model_path /root/models/Qwen3-8B \
-  --save_directory /root/models/Qwen3-8B-w4a4 \
-  --calib_file common/qwen_qwen3_cot_w4a4.json \
-  --trust_remote_code True \
-  --batch_size 1
-```
-Note: replace root with real root. This supports Qwen3 models.
-
-
-```bash
-  python3 qwen2.5_w4a4.py 
-  --model_path /root/models/Qwen2.5-14B-Instruct \
-  --save_directory /root/models/Qwen2.5-14B-Instruct-w4a4 \
-  --calib_file common/qwen_qwen3_cot_w4a4.json \
-  --trust_remote_code True \
-  --batch_size 1
-```
-
-Note: replace root with real root. This supports Qwen2.5 models, such as Qwen2.5-7B and Qwen2.5-14B.
-
-
-### PPL evaluation
-
-PPL evaluation run command：
-
-```bash
-python test_ppl.py --model_path /root/models/Qwen2.5-7B-w8a8-Instruct-smooth
-```
-
-Note: run this command in a free npu.
-
-## Canonical runtime MOD metadata
-
-The runtime descriptor component records its canonical identity, directly responsible
-maintainer, advisor status, default-off activation, rollback, scope, and evidence
-qualification in [`runtime-extension/MOD_METADATA.json`](runtime-extension/MOD_METADATA.json).
-`advisor_status: unknown` is not confirmed `none`; no performance claim is implied.

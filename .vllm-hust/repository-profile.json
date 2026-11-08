@@ -10,22 +10,36 @@
       "id": "ascend-post-training-quantization",
       "artifact_type": "tool",
       "system_role": "model_artifact_preparation",
-      "delivery_model": "source_repository",
-      "execution_planes": ["device", "offline"],
-      "integration_contracts": ["vllm-hust.ascend-quant-artifact/v1"],
-      "integration_surfaces": ["msmodelslim quantization CLI", "quantized model artifacts"]
+      "delivery_model": "python_distribution",
+      "execution_planes": [
+        "device",
+        "offline"
+      ],
+      "integration_contracts": [
+        "vllm-hust.ascend-quant-artifact/v1"
+      ],
+      "integration_surfaces": [
+        "msmodelslim quantization CLI",
+        "quantized model artifacts",
+        "ascend-quant-toolkit PyPI distribution (toolkit-v<version>)"
+      ]
     },
     {
       "id": "ascend-quant-runtime-extension",
       "artifact_type": "extension",
       "system_role": "runtime_artifact_compatibility",
       "delivery_model": "python_distribution",
-      "execution_planes": ["worker", "device"],
+      "execution_planes": [
+        "worker",
+        "device"
+      ],
       "integration_contracts": [
         "vllm.ascend.quantized-artifact-loader.v1",
         "vllm.ascend.quantized-operator-selection.v1"
       ],
-      "integration_surfaces": ["vllm-hust-ext manifest 0.2 experimental"],
+      "integration_surfaces": [
+        "vllm-hust-ext manifest 0.3 experimental"
+      ],
       "status": "import_only"
     }
   ],
@@ -41,8 +55,7 @@
     ]
   },
   "validation": [
-    "python -m py_compile qwen2.5_w4a4.py qwen3_w4a4.py test_ppl.py",
-    "python -m pytest tests runtime-extension/tests"
+    "python -m pytest -q tests runtime-extension/tests"
   ],
   "compatibility_document": "README.md"
 }

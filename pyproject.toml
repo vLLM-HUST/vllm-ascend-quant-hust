@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascend-quant-toolkit"
+dynamic = ["version"]
+description = "Offline calibration, conversion, artifact export, and evaluation tools for Ascend quantization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "Ascend Quantization Team" },
+]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust"
+Documentation = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust/tree/main/docs"
+Issues = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust/issues"
+
+[project.scripts]
+ascend-quant-toolkit = "ascend_quant_toolkit.cli:main"
+
+[project.entry-points."ascend_quant_toolkit.recipes"]
+qwen25-w8a8 = "ascend_quant_toolkit.recipes.qwen25_w8a8:get_recipe"
+qwen35-35b-a3b-w4a8-gdnw8a8 = "ascend_quant_toolkit.recipes.qwen35_w4a8_gdnw8a8:get_recipe"
+
+[tool.setuptools.dynamic]
+version = { attr = "ascend_quant_toolkit.__version__" }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ascend_quant_toolkit = ["recipes/yaml/*.yaml"]
+
+[tool.setuptools.data-files]
+"share/ascend-quant-toolkit/contracts" = [
+  "contracts/ascend-quant-artifact-v1.schema.json",
+  "contracts/ascend-quant-evidence-v1.schema.json",
+  "contracts/README.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "runtime-extension/src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
