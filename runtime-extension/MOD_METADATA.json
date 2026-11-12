@@ -20,8 +20,13 @@
   "mod_id": "ascend-quant-runtime-descriptor",
   "repository": "vllm-ascend-quant-hust",
   "responsibility": {
-    "advisor_status": "not_declared",
-    "advisors": [],
+    "advisor_status": "declared",
+    "advisors": [
+      {
+        "name": "Xiang Xiang / 项翔",
+        "relationship": "internal"
+      }
+    ],
     "maintainers": [
       {
         "github": "aly16-k",
