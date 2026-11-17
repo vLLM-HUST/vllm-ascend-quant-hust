@@ -29,6 +29,7 @@
 | 版本/日期 | 0.5.0 / 2026-10-28（`CHANGELOG.md`）；PyPI 上传 2026-11-12T10:00:44Z |
 | `__version__` | `0.5.0`（`src/ascend_quant_toolkit/__init__.py`） |
 | 发布 tag | `toolkit-v0.5.0` → commit `2eb0c5f18785b2eee25b525ad0f957f8a7ad3768`（当前 `origin/main`） |
+| GitHub Release | id `442761073`，2026-11-12T09:59:48Z；`https://github.com/vLLM-HUST/vllm-ascend-quant-hust/releases/tag/toolkit-v0.5.0` |
 | 本地分支 | `feat/toolkit-0.5.0-qwen35-w4a8` @ `b93c073a60a1e6b28dc29c68b56358b8c8c27e88`（发布前分支） |
 | PyPI wheel | `ascend_quant_toolkit-0.5.0-py3-none-any.whl`，48,923 B，sha256 `ad3b320f8cbcabd4527eba0b7180808be7190cc0b4b1bb18636232cea3f6657f`，2026-11-12T10:00:44.436902Z |
 | PyPI sdist | `ascend_quant_toolkit-0.5.0.tar.gz`，66,144 B，sha256 `ea065055cabfa3e87c89584068a1953311c547ee092fea9f255fa0df0a86381f`，2026-11-12T10:00:45.683173Z |
@@ -128,6 +129,7 @@ Checkpoint 配方身份：
 | 0.4.2 release record | tag `toolkit-v0.4.2`；commit `50ba3f8fdad986fa647b0d55918d13b47a25ec42`；GitHub Release `411366927` |
 | 0.5.0 toolkit 分支（发布前） | `b93c073a60a1e6b28dc29c68b56358b8c8c27e88` |
 | 0.5.0 发布 tag | `toolkit-v0.5.0` → `2eb0c5f18785b2eee25b525ad0f957f8a7ad3768`；`https://github.com/vLLM-HUST/vllm-ascend-quant-hust/tree/toolkit-v0.5.0` |
+| 0.5.0 GitHub Release | id `442761073`，2026-11-12T09:59:48Z；`https://github.com/vLLM-HUST/vllm-ascend-quant-hust/releases/tag/toolkit-v0.5.0` |
 | 0.5.0 PyPI 发布 | `https://pypi.org/project/ascend-quant-toolkit/0.5.0/`；wheel 48,923 B / sha256 `ad3b320f8cbcabd4527eba0b7180808be7190cc0b4b1bb18636232cea3f6657f`；sdist 66,144 B / sha256 `ea065055cabfa3e87c89584068a1953311c547ee092fea9f255fa0df0a86381f`；上传 2026-11-12T10:00:44Z/45Z |
 | 0.5.0 artifact record | `docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md` |
 | benchmark report | `reports/qwen35-w4a8-gdnw8a8-tp1-20261023/README.md`；benchmark 分支 `83956a6749dcea75e69e170600075092a6442d6b`；`main` `51563c0e6b65f5563475b539dad54f236f7e0470` |
