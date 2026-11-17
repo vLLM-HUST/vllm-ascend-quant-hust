@@ -43,7 +43,7 @@
 
 | Toolkit | 配方 | 配方 sha256 | Checkpoint | 制品类型 | 运行时/基准记录 |
 |---|---|---|---|---|---|
-| 0.4.2 | `qwen25-w8a8` | 本地当前 YAML `9c9385da...`（0.4.2 tag 内未单独核验） | 未随 0.4.2 发布 Qwen3.5 checkpoint | — | 仅发布/安装验证；无本仓库内吞吐/PPL 记录 |
+| 0.4.2 | `qwen25-w8a8` | 本地当前 YAML `9c9385da...`（0.4.2 tag 内未单独核验） | 未随 0.4.2 发布 Qwen3.5 checkpoint | — | 仅发布/安装验证；无本仓库内性能记录 |
 | 0.5.0 | `qwen25-w8a8` | `9c9385daea4b81019ac210f73867b883b5f833a7dda9627b6e3e543bc099dbd0` | 无新增 | — | 同一运行时适配 |
 | 0.5.0 | `qwen35-35b-a3b-w4a8-gdnw8a8` | `0bcef0f56ddebea8f34841127e6ac5b369ffee20853e5a7d148c344387fd9384` | `/data/jxd/Qwen3.5-35B-A3B-W8A8-NoRot` | 混合 W4A8/W8A8，6 分片，24,047,130,272 B（权重） | `vllm-hust-benchmark/reports/qwen35-w4a8-gdnw8a8-tp1-20261023/` |
 
@@ -69,26 +69,20 @@ Checkpoint 配方身份：
 
 分片 sha256 见 `docs/artifacts/qwen35-w4a8-gdnw8a8-tp1-20261023.md` 第 28–35 行（本索引不重复展开）。
 
-## 4. 已测指标（详细映射见 benchmark 报告）
+## 4. 指标数值的位置（本仓库不复制数值）
 
-| 指标 | 值 | 设备总量 | 原始记录 |
-|---|---|---:|---|
-| BF16 → 混合量化权重 | 66.99 GiB → 22.38 GiB | 1×910B3（TP1 服务） | artifact record；`du -sb`；curve generator KV_NOTE |
-| 单卡部署 | 22.38 GiB 权重 + 33.49 GiB KV = 55.87 GiB，落在 0.95×60.96 GiB 预算内 | 1×910B3 | `gen_w4a8gdn_tp1_curve.py` KV_NOTE；report 启动命令 |
-| 吞吐 C1–C16（容量组，KV 33.49 GiB） | 90.19 / 142.95 / 203.79 / 312.70 / 404.81 output tok/s | 1×910B3 | `swe-prefix-reuse/results/w4a8ours-tp1-pinmax-c*-900s/summary.json` |
-| 同 KV（18.85 GiB）C16 对照 | W8A8 205.58 vs W4A8 203.39 output tok/s | 1×910B3 | `results/tp1-c16-900s/` 与 `results/w4a8ours-tp1-c16-900s/`（config 均为 `20242376704` B） |
-| PPL（双卡） | bf16 7.1694；W8A8 7.1750；experts int4 7.8551；本制品 7.9070 | 2×910B3（TP2） | `logs/ppl_{bf16_20261022,w8a8,w4a8gcy,w8a8nr}.json` |
-| PPL（单卡） | W8A8 7.1785；本制品 7.4009（复现 7.4005/7.4030） | 1×910B3（TP1） | `logs/ppl_w8a8_tp1_20261113T101838Z.json`（sha256 `bf4a10d0...`）、`logs/ppl_w8a8nr_tp1_20261113T101838Z.json`（sha256 `2c1f8e47...`）；历史 TP1 见 `ppl_dense_base_*` |
-| HLE EP2 Gold | 145/668 = 21.71% | 2×910B3（TP2+EP2） | `hle-verified-public-20261106-ep2/report.json` |
-| HLE EP2 Revision | 302/1143 = 26.42% | 2×910B3（TP2+EP2） | 同上 |
-| FrontierScience Olympiad | 60/100 = 60.00% | 2×910B3（TP2） | `runs/fs-w8a8nr-tp2-20261106/results/frontierscience.csv` |
-| FrontierScience Research | 1/60 = 1.67%，mean score 2.366 | 2×910B3（TP2） | 同上 |
-| 长上下文 8K/32K/128K | NIAH 单针两臂 100%；多针 W8A8 90/90、W4A8 100/90；长生成 32K 80% vs 100%，128K 60% vs 60% | 1×910B3（TP1） | `long-context/run_20261113T111012Z/out/{niah,longgen}_{w8a8,w4a8}.jsonl`；`stability.json` |
-| 长上下文 260K 扩展 | NIAH 30/30=100% vs 29/30=96.7%；长生成 80% vs 100% | 1×910B3（TP1） | `long-context-256k/run_20261116T042838Z/out/{niah,longgen}_{w8a8,w4a8}.jsonl`；`stability.json` |
-| BF16 锚点长上下文 PPL | 4K/32K/128K：W4A8 vs BF16 +2.09%/+2.50%/+2.83%；vs W8A8 +1.95%/+2.14%/+4.38% | BF16 2×910B3 TP2；量化 1×910B3 TP1 | `p2-2-bf16-anchor/run_20261116T071251Z/out/longctx_ppl.csv` / `longctx.json` |
-| 长文本性能 C1 8K/32K/128K/260K | TTFT ~0.66/2.7/18/57 s；W4A8 vs W8A8 TPOT +0.6%~+2.2%，total tok/s −1% | 1×910B3（TP1） | `long-context-perf/run_20261116T075647Z/out/longperf_summary.csv` |
-| 长文本并发 8K/32K C1–C8、128K C1–C4、260K C1–C2 | W4A8 total tok/s −0.4%~−9.2%；32K C8 最差 | 1×910B3（TP1） | `long-context-perf-conc/run_20261116T113623Z/out/longperf_conc_summary.csv` |
-| 完整 262,144 上下文 | **未测** | — | 260K 扩展未到满上下文，不外推 |
+按组织 benchmark-only evidence 策略，吞吐、PPL、任务分数、长上下文和长文本
+性能的数值、设备总量、评分器与原始记录统一放在 `vLLM-HUST/vllm-hust-benchmark`：
+
+| 内容 | 固定位置 |
+|---|---|
+| 2026-11-17 证据映射 | `reports/tech-outcomes-20261117/ascend-quant/README.md`；`reports/tech-outcomes-20261117/ascend-quant/evidence-map.csv` |
+| 2026-10-23 单卡曲线报告 | `reports/qwen35-w4a8-gdnw8a8-tp1-20261023/README.md` |
+| 原始记录 | 上述报告引用的 `results/`、`logs/`、`long-context*/`、`p2-2-bf16-anchor/` 路径 |
+
+本索引只保留制品身份、配方/checkpoint/版本对应和发布字节；不在这里重复
+任何性能或任务分数数值。引用时以 benchmark 报告的“制品—设备总量—评分器—
+输出—原始记录”映射为准。
 
 ## 5. 版本配对与冲突（必须由负责人确认）
 
@@ -112,15 +106,15 @@ Checkpoint 配方身份：
 ## 6. 建议的对外引用层级
 
 - **可引用（有原始记录）**：0.4.2 PyPI 字节与哈希；0.5.0 PyPI wheel/sdist 字节与哈希；
-  0.5.0 配方 sha256、checkpoint 分片哈希、verify-artifact 结果；吞吐、PPL、
-  HLE/FS 的具体数值（带设备总量与限定）。
+  0.5.0 配方 sha256、checkpoint 分片哈希、verify-artifact 结果；benchmark 报告中的
+  性能与任务分数（引用时必须带设备总量与限定）。
 - **不可引用（缺原件）**：0.4.2 runtime E2E 的“新复制件”；
   完整 262,144 上下文（未测；260K 扩展已测）；19.22 GiB 同 KV 组（未测）；
   33.49 GiB 容量组与 18.85 GiB W8A8 之间的跨 KV 加速比较。
-- **已可用的同 KV 对照**：18.85 GiB pin 下，W8A8 C16 205.58 与 W4A8/GDN C16 203.39
-  （1 卡、同负载、同协议；差 1.1%，不构成加速结论）。
+- **同 KV 对照**：数值、设备总量和原始记录见 benchmark 报告；本索引不复述，
+  避免把实测结果复制到非 benchmark 仓库。
 - **必须带限定**：HLE `formal_acceptance=false`、自评分、单 trial；FS Research n=60；
-  任务分数为 TP2 两卡；吞吐曲线为 TP1 单卡。
+  任务分数与窗口曲线的设备总量不同，引用时必须按 benchmark 报告的映射分别标注。
 
 ## 7. 固定引用
 
