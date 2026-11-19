@@ -1,0 +1,58 @@
+[a8w4_compact] 0001 - AIV stage: bulk-load group_list into UB before walking it.
+
+Why
+---
+GMMA8W4PostProcess::UpdateVecConfig runs on every AIV core (40 of them) and
+walks the full expert range twice with groupListGM.GetValue(i), i.e. blocking
+scalar GM reads per expert per core.  At T=24 with E=256 the AIV stage costs
+28.4 us against 6.95 us with E=8; the whole delta is this walk and it vanishes
+once the list is read from UB.  Same values, same order, same arithmetic, so
+numerics are bit-identical.
+
+The AIC side is NOT fixed here: the cube core has no UB, so the same trick is
+unavailable to GMMA8W4MidProcess (63.6 us of aic_scalar).  That half needs a
+compacted active-expert table produced on the AIV - see ../README.md, phase 2.
+
+Applies to:
+  op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/
+    grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
+
+--- a/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
++++ b/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
+@@ -252,6 +252,16 @@
+                                                            WorkSpaceSplitConfig &workspaceSplitConfig,
+                                                            int64_t workspaceSplitLoopIdx, TPipe *pipe)
+ {
++    // [a8w4_compact] One bulk copy instead of 2 * E blocking scalar GM reads per
++    // core: the AIV has a UB, so the walk below can read locally.
++    uint32_t glLen = static_cast<uint32_t>(workspaceSplitConfig.rightMatrixExpertEndIndex) + 1;
++    TBuf<TPosition::VECCALC> glListBuf;
++    pipe->InitBuffer(glListBuf, AlignUp<uint32_t>(glLen, 8) * sizeof(int64_t));
++    LocalTensor<int64_t> glLocal = glListBuf.Get<int64_t>();
++    DataCopyExtParams glCopyParams{1, static_cast<uint32_t>(glLen * sizeof(int64_t)), 0, 0, 0};
++    DataCopyPadExtParams<int64_t> glPadParams{false, 0, 0, 0};
++    DataCopyPad(glLocal, groupListGM, glCopyParams, glPadParams);
++    PipeBarrier<PIPE_ALL>();
+     // 第一步 读取grouplist reduceSum 计算总数据个数
+     vecConfig.M = workspaceSplitLoopIdx < workspaceSplitConfig.loopCount - 1 ? workspaceSplitConfig.notLastTaskSize :
+                                                                                workspaceSplitConfig.lastLoopTaskSize;
+@@ -270,16 +280,16 @@
+     int64_t totalTmp = 0;
+     if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
+         for (uint32_t i = 0; i < workspaceSplitConfig.rightMatrixExpertStartIndex; i++) {
+-            totalTmp += groupListGM.GetValue(i);
++            totalTmp += glLocal.GetValue(i);  // [a8w4_compact] local read
+         }
+     }
+     for (uint32_t groupIdx = workspaceSplitConfig.rightMatrixExpertStartIndex;
+          groupIdx <= workspaceSplitConfig.rightMatrixExpertEndIndex; groupIdx++) {
+         int64_t currM = 0;
+         if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+-            currM = groupListGM.GetValue(groupIdx);
++            currM = glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
+         } else {
+-            totalTmp += groupListGM.GetValue(groupIdx);
++            totalTmp += glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
+             currM = totalTmp;
+         }
+         int64_t tempM = currM - prevM;

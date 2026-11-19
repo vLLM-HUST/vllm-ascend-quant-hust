@@ -1,0 +1,3 @@
+include README.md LICENSE NOTICE
+recursive-include src/vllm_ascend_a8w4_compact/bundles *
+global-exclude __pycache__ *.pyc

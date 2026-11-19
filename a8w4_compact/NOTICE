@@ -1,0 +1,12 @@
+vllm-ascend-a8w4-compact
+Copyright (c) 2026 vLLM-HUST contributors
+
+This package bundles a prebuilt custom operator package and source patches
+derived from the custom_transformer vendor package shipped with vLLM-Ascend
+HUST. Those files retain their original Huawei Technologies Co., Ltd.
+copyright headers and are distributed under the CANN Open Software License
+Agreement Version 2.0; see the headers in the bundled sources
+(`a8w4-compact assets`).
+
+The Python installer code in this package is licensed under the Apache
+License, Version 2.0 (see LICENSE).

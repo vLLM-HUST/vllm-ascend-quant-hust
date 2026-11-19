@@ -1,0 +1,87 @@
+name: Publish A8W4 Compact
+
+# Publishes vllm-ascend-a8w4-compact to PyPI.
+# One-time setup: add a PyPI Trusted Publisher for
+#   project:   vllm-ascend-a8w4-compact
+#   owner:     vLLM-HUST
+#   repo:      vllm-ascend-quant-hust
+#   workflow:  publish-a8w4-compact.yml
+#   environment: pypi
+# Then publish a GitHub Release with a tag `a8w4-compact-v<version>`.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-a8w4-compact-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Verify the release tag matches the package version
+        run: |
+          VERSION="$(PYTHONPATH=a8w4_compact/src python -c 'import vllm_ascend_a8w4_compact; print(vllm_ascend_a8w4_compact.__version__)')"
+          EXPECTED="a8w4-compact-v${VERSION}"
+          if [ "${GITHUB_REF_NAME}" != "${EXPECTED}" ]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match ${EXPECTED}."
+            exit 1
+          fi
+          echo "A8W4_COMPACT_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build the installer wheel and sdist
+        run: python -m build ./a8w4_compact --outdir dist
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Install the built wheel in an isolated environment
+        run: |
+          python -m venv /tmp/a8w4-install
+          /tmp/a8w4-install/bin/python -m pip install --quiet --upgrade pip
+          /tmp/a8w4-install/bin/python -m pip install --quiet --no-deps dist/*.whl
+          /tmp/a8w4-install/bin/a8w4-compact --version
+          /tmp/a8w4-install/bin/a8w4-compact assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: a8w4-compact-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vllm-ascend-a8w4-compact
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: a8w4-compact-dist
+          path: dist
+      - name: Publish distributions with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true

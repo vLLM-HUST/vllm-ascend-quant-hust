@@ -1,0 +1,74 @@
+# 0002 - a8w4 scan elimination (batch 1)
+# Applied to csrc/gmm/grouped_matmul_swiglu_quant_v2 in the vllm-hust source tree.
+
+diff -ruN .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h
+--- .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h	2026-09-16 09:05:06.785657000 +0000
++++ .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h	2026-11-18 12:58:09.710705000 +0000
+@@ -205,6 +205,11 @@
+             int32_t splitValue = (currSplitValue - prevSplitValue) * 2; // 2: int8 has been split in 2 int4
+             prevSplitValue = currSplitValue;
+ 
++            // [a8w4_compact2] inactive expert: skip SetOrgShape/SetMNConfig and
++            // the tile loop. preCount is unchanged because blockDimM == 0.
++            if (splitValue <= 0) {
++                continue;
++            }
+             SetMNConfig(splitValue, mnConfig);
+             if (mnConfig.m <= 0 || mnConfig.k <= 0 || mnConfig.n <= 0) {
+                 continue;
+diff -ruN .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h
+--- .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h	2026-09-16 09:05:06.784716000 +0000
++++ .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h	2026-11-18 12:58:09.707888000 +0000
+@@ -142,15 +142,9 @@
+ __aicore__ inline void
+ GMMSwigluQuantPipelineSchedule<mmType>::InitWorkSpaceSplitConfig(WorkSpaceSplitConfig &workspaceSplitConfig)
+ {
+-    if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+-        workspaceSplitConfig.M = groupListGM.GetValue(gmmSwigluQuantV2->groupListLen - 1);
+-    } else {
+-        int64_t totalTmp = 0;
+-        for (uint32_t i = 0; i < gmmSwigluQuantV2->groupListLen; i++) {
+-            totalTmp += groupListGM.GetValue(i);
+-        }
+-        workspaceSplitConfig.M = totalTmp;
+-    }
++    // [a8w4_compact2] The host tiling already sets M = x.shape[0], which equals
++    // the sum of group_list; avoid an O(E) blocking scalar scan on every core.
++    workspaceSplitConfig.M = gmmSwigluQuantV2BaseParams->M;
+     workspaceSplitConfig.loopCount = Ceil(workspaceSplitConfig.M, gmmSwigluQuantV2BaseParams->mLimit);
+     workspaceSplitConfig.notLastTaskSize = gmmSwigluQuantV2BaseParams->mLimit;
+     workspaceSplitConfig.lastLoopTaskSize =
+@@ -168,6 +162,18 @@
+ {
+     if (workspaceSplitLoopIdx < 0)
+         return;
++    // [a8w4_compact2] Decode has M << mLimit, so loopCount == 1. In that case
++    // the scan below always ends with the isLastLoop clamp to groupListLen-1;
++    // skip the O(E) walk entirely.
++    if (workspaceSplitConfig.loopCount <= 1) {
++        workspaceSplitConfig.leftMatrixStartIndex = 0;
++        workspaceSplitConfig.rightMatrixExpertStartIndex = 0;
++        workspaceSplitConfig.rightMatrixExpertEndIndex =
++            gmmSwigluQuantV2->groupListLen > 0 ? gmmSwigluQuantV2->groupListLen - 1 : 0;
++        workspaceSplitConfig.rightMatrixExpertNextStartIndex = gmmSwigluQuantV2->groupListLen;
++        workspaceSplitConfig.isLastLoop = true;
++        return;
++    }
+     workspaceSplitConfig.leftMatrixStartIndex = workspaceSplitLoopIdx * gmmSwigluQuantV2BaseParams->mLimit;
+     workspaceSplitConfig.rightMatrixExpertStartIndex = workspaceSplitConfig.rightMatrixExpertNextStartIndex;
+     workspaceSplitConfig.rightMatrixExpertEndIndex = workspaceSplitConfig.rightMatrixExpertStartIndex;
+diff -ruN .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
+--- .src-backup-20261118/grouped_matmul_swiglu_quant_v2/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h	2026-10-31 03:56:00.564141000 +0000
++++ .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h	2026-11-18 12:58:09.714852000 +0000
+@@ -294,6 +294,11 @@
+         }
+         int64_t tempM = currM - prevM;
+         prevM = currM;
++        // [a8w4_compact2] inactive expert contributes no rows; curStartIdx and
++        // nextUpdateInterVal are unchanged, so skip the branch.
++        if (tempM <= 0) {
++            continue;
++        }
+         if (curStartIdx >= 0 && curStartIdx - tempM < 0) {
+             vecConfig.curGroupIdx = groupIdx;
+             vecConfig.nextUpdateInterVal = tempM - curStartIdx;
