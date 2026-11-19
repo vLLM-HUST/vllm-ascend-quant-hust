@@ -1,0 +1,393 @@
+--- a/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h
++++ b/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h
+@@ -99,6 +99,7 @@
+     GlobalTensor<half> mmOutGM1;
+     GlobalTensor<half> mmOutGM2;
+     GlobalTensor<int64_t> groupListGM;
++    GlobalTensor<int32_t> descGM; // [a8w4_compact2]
+     GlobalTensor<uint64_t> weightScaleGM;
+ 
+     GM_ADDR weightTensorPtr;
+@@ -111,6 +112,7 @@
+     uint32_t vecCount = 0;
+     uint32_t xRowSumCount = 0;
+     const GMMSwigluQuantV2BaseParams *__restrict gmmSwigluQuantV2BaseParams;
++    bool descUsable{false}; // [a8w4_compact2k]
+ };
+ 
+ template <typename mmType>
+@@ -127,6 +129,11 @@
+         weightGM.SetGlobalBuffer(GetTensorAddr<int4b_t>(0, gmAddrParams.weightGM));
+         weightScaleGM.SetGlobalBuffer(GetTensorAddr<uint64_t>(0, gmAddrParams.weightScaleGM));
+         groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM);
++        // [a8w4_compact2k] descriptor at the start of the unused mmOut2 region
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmAddrParams.workSpaceOffset3)); // [a8w4_compact2k]
++        descUsable = (gmAddrParams.workSpaceOffset3 - gmAddrParams.workSpaceOffset2) >=
++                     static_cast<int64_t>((2 * gmmSwigluQuantV2BaseParams->groupNum + 2) * sizeof(int32_t));
+         mmOutGM1.SetGlobalBuffer(
+             (__gm__ half *)((__gm__ int8_t *)gmAddrParams.workSpaceGM + gmAddrParams.workSpaceOffset2));
+         mmOutGM2.SetGlobalBuffer(
+@@ -181,6 +188,40 @@
+         mnConfig.k = gmmSwigluQuantV2BaseParams->K; // tilingData
+         mnConfig.n = gmmSwigluQuantV2BaseParams->N; // tilingData
+         mnConfig.blockDimN = Ceil(mnConfig.n, mnConfig.singleN);
++        // [a8w4_compact2] Compact descriptor path for the decode-sized single
++        // workspace split: distribute contiguous active-expert ranges across AIC
++        // cores, and process every tile of an assigned expert on that core. This
++        // removes the per-core O(E) scan and the per-inactive-expert setup.
++        if (workspaceSplitConfig.loopCount == 1 && workspaceSplitConfig.M <= A8W4_DESC_MAX_M && descUsable) {
++            int32_t numActive = descGM.GetValue(0);
++            int64_t E = gmmSwigluQuantV2BaseParams->groupNum;
++            int64_t aStart = static_cast<int64_t>(coreIdx) * numActive / gmmSwigluQuantV2BaseParams->coreNum;
++            int64_t aEnd = static_cast<int64_t>(coreIdx + 1) * numActive / gmmSwigluQuantV2BaseParams->coreNum;
++            for (int64_t a = aStart; a < aEnd; ++a) {
++                int32_t expertIdx = descGM.GetValue(static_cast<uint32_t>(1 + a));
++                int64_t prev = descGM.GetValue(static_cast<uint32_t>(1 + E + a));
++                int64_t next = descGM.GetValue(static_cast<uint32_t>(1 + E + a + 1));
++                int64_t count = next - prev;
++                if (count <= 0) {
++                    continue;
++                }
++                uint32_t m = static_cast<uint32_t>(count * 2); // int8 activation split in 2 int4
++                mnConfig.m = m;
++                mnConfig.blockDimM = Ceil(m, mnConfig.singleM);
++                mnConfig.xBaseOffset = static_cast<uint64_t>(prev) * 2 * mnConfig.k;
++                mnConfig.yBaseOffset = static_cast<uint64_t>(prev) * 2 * mnConfig.n;
++                mnConfig.mIdx = 0;
++                mnConfig.nIdx = 0;
++                mm.SetOrgShape(m, mnConfig.n, mnConfig.k);
++                uint32_t tiles = mnConfig.blockDimM * mnConfig.blockDimN;
++                for (uint32_t t = 0; t < tiles; ++t) {
++                    mnConfig.mIdx = t / mnConfig.blockDimN;
++                    mnConfig.nIdx = t % mnConfig.blockDimN;
++                    MMCompute(static_cast<uint32_t>(expertIdx), mnConfig, workspaceSplitConfig);
++                }
++            }
++            return;
++        }
+         int32_t prevSplitValue = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
+         int32_t totalTmp = 0;
+         if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
+@@ -205,6 +246,13 @@
+             int32_t splitValue = (currSplitValue - prevSplitValue) * 2; // 2: int8 has been split in 2 int4
+             prevSplitValue = currSplitValue;
+ 
++            // [a8w4_compact2] inactive expert: skip SetOrgShape and the tile loop,
++            // but keep mnConfig.m == 0: UpdateMnConfig() at the top of the next
++            // iteration accumulates this expert's m into the x/y offsets.
++            if (splitValue <= 0) {
++                mnConfig.m = 0;
++                continue;
++            }
+             SetMNConfig(splitValue, mnConfig);
+             if (mnConfig.m <= 0 || mnConfig.k <= 0 || mnConfig.n <= 0) {
+                 continue;
+--- a/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h
++++ b/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_pipeline.h
+@@ -142,14 +142,73 @@
+ __aicore__ inline void
+ GMMSwigluQuantPipelineSchedule<mmType>::InitWorkSpaceSplitConfig(WorkSpaceSplitConfig &workspaceSplitConfig)
+ {
+-    if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+-        workspaceSplitConfig.M = groupListGM.GetValue(gmmSwigluQuantV2->groupListLen - 1);
++    // [a8w4_compact2k3] The tiling M is x.shape[0] (token count); the GEMM row
++    // count is the group_list sum.  Instead of every AIC/AIV core walking
++    // group_list with blocking scalar GM reads, one AIV core bulk-copies the
++    // list into UB, builds the active-expert descriptor there, and publishes M
++    // through the descriptor.  The descriptor lives at the start of mmOut2,
++    // which is unused whenever loopCount == 1 (the only case that reads it).
++    uint32_t E = static_cast<uint32_t>(gmmSwigluQuantV2BaseParams->groupNum);
++    uint32_t listBytes = E * static_cast<uint32_t>(sizeof(int64_t));
++    uint32_t descBytes = (2 * E + 2) * static_cast<uint32_t>(sizeof(int32_t));
++    bool descFits = (gmAddrParams.workSpaceOffset3 - gmAddrParams.workSpaceOffset2) >=
++                    static_cast<int64_t>(descBytes);
++    if (descFits) {
++        if ASCEND_IS_AIV {
++            if (GetBlockIdx() == 0) {
++                TBuf<TPosition::VECCALC> glBuf;
++                TBuf<TPosition::VECCALC> descBuf;
++                pipe->InitBuffer(glBuf, (listBytes + 31) / 32 * 32);
++                pipe->InitBuffer(descBuf, (descBytes + 31) / 32 * 32);
++                LocalTensor<int64_t> glLocal = glBuf.Get<int64_t>();
++                LocalTensor<int32_t> descLocal = descBuf.Get<int32_t>();
++                DataCopyExtParams glCopyParams{1, listBytes, 0, 0, 0};
++                DataCopyPadExtParams<int64_t> glPadParams{false, 0, 0, 0};
++                DataCopyPad(glLocal, groupListGM, glCopyParams, glPadParams);
++                PipeBarrier<PIPE_ALL>();
++                int32_t active = 0;
++                int64_t cum = 0;
++                int64_t prevCum = 0;
++                for (uint32_t e = 0; e < E; ++e) {
++                    int64_t cur = glLocal.GetValue(e);
++                    int64_t count = (gmmSwigluQuantV2BaseParams->groupListType == 0) ? (cur - prevCum) : cur;
++                    prevCum = cur;
++                    if (count <= 0) {
++                        continue;
++                    }
++                    cum += count;
++                    descLocal.SetValue(1 + active, static_cast<int32_t>(e));
++                    descLocal.SetValue(1 + E + active + 1, static_cast<int32_t>(cum));
++                    ++active;
++                }
++                descLocal.SetValue(0, active);
++                descLocal.SetValue(1 + E, 0);
++                GlobalTensor<int32_t> descGMOut;
++                descGMOut.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                             gmAddrParams.workSpaceOffset3));
++                DataCopyExtParams descCopyParams{1, descBytes, 0, 0, 0};
++                DataCopyPad(descGMOut, descLocal, descCopyParams);
++                PipeBarrier<PIPE_ALL>();
++            }
++        }
++        SyncAll<false>();
++        GlobalTensor<int32_t> descGMRd;
++        descGMRd.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                    gmAddrParams.workSpaceOffset3));
++        int32_t numActive = descGMRd.GetValue(0);
++        workspaceSplitConfig.M =
++            static_cast<int64_t>(descGMRd.GetValue(static_cast<uint32_t>(1 + E + numActive)));
++        SyncAll<false>();
+     } else {
+-        int64_t totalTmp = 0;
+-        for (uint32_t i = 0; i < gmmSwigluQuantV2->groupListLen; i++) {
+-            totalTmp += groupListGM.GetValue(i);
++        if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
++            workspaceSplitConfig.M = groupListGM.GetValue(gmmSwigluQuantV2->groupListLen - 1);
++        } else {
++            int64_t totalTmp = 0;
++            for (uint32_t i = 0; i < gmmSwigluQuantV2->groupListLen; i++) {
++                totalTmp += groupListGM.GetValue(i);
++            }
++            workspaceSplitConfig.M = totalTmp;
+         }
+-        workspaceSplitConfig.M = totalTmp;
+     }
+     workspaceSplitConfig.loopCount = Ceil(workspaceSplitConfig.M, gmmSwigluQuantV2BaseParams->mLimit);
+     workspaceSplitConfig.notLastTaskSize = gmmSwigluQuantV2BaseParams->mLimit;
+@@ -168,6 +227,18 @@
+ {
+     if (workspaceSplitLoopIdx < 0)
+         return;
++    // [a8w4_compact2] Decode has M << mLimit, so loopCount == 1. In that case
++    // the scan below always ends with the isLastLoop clamp to groupListLen-1;
++    // skip the O(E) walk entirely.
++    if (workspaceSplitConfig.loopCount <= 1) {
++        workspaceSplitConfig.leftMatrixStartIndex = 0;
++        workspaceSplitConfig.rightMatrixExpertStartIndex = 0;
++        workspaceSplitConfig.rightMatrixExpertEndIndex =
++            gmmSwigluQuantV2->groupListLen > 0 ? gmmSwigluQuantV2->groupListLen - 1 : 0;
++        workspaceSplitConfig.rightMatrixExpertNextStartIndex = gmmSwigluQuantV2->groupListLen;
++        workspaceSplitConfig.isLastLoop = true;
++        return;
++    }
+     workspaceSplitConfig.leftMatrixStartIndex = workspaceSplitLoopIdx * gmmSwigluQuantV2BaseParams->mLimit;
+     workspaceSplitConfig.rightMatrixExpertStartIndex = workspaceSplitConfig.rightMatrixExpertNextStartIndex;
+     workspaceSplitConfig.rightMatrixExpertEndIndex = workspaceSplitConfig.rightMatrixExpertStartIndex;
+--- a/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
++++ b/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
+@@ -64,6 +64,7 @@
+     const GMMSwigluQuantV2BaseParams *__restrict gmmSwigluQuantV2BaseParams;
+     GlobalTensor<float> perTokenScaleGM;
+     GlobalTensor<int64_t> groupListGM;
++    GlobalTensor<int32_t> descGM; // [a8w4_compact2] compact active-expert descriptor
+     GlobalTensor<int8_t> quantOutputGM;
+     GlobalTensor<float> weightAuxiliaryMatrixGM;
+     GlobalTensor<float> quantScaleOutputGM;
+@@ -80,6 +81,7 @@
+     int64_t aivCoreNum = 0;
+     GM_ADDR weightAuxiliaryMatrixTensorPtr;
+     float limited = FLOAT_INF;
++    bool descUsable{false}; // [a8w4_compact2k]
+ };
+ 
+ __aicore__ inline void
+@@ -95,6 +97,11 @@
+         gmmSwigluQuantV2 = gmmSwigluIN;
+         weightAuxiliaryMatrixGM.SetGlobalBuffer(GetTensorAddr<float>(0, gmAddrParams.weightAuxiliaryMatrixGM));
+         groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM, gmmSwigluQuantV2->groupListLen);
++        // [a8w4_compact2k] descriptor at the start of the unused mmOut2 region
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmAddrParams.workSpaceOffset3)); // [a8w4_compact2k]
++        descUsable = (gmAddrParams.workSpaceOffset3 - gmAddrParams.workSpaceOffset2) >=
++                     static_cast<int64_t>((2 * gmmSwigluQuantV2BaseParams->groupNum + 2) * sizeof(int32_t));
+         mmOutGM1.SetGlobalBuffer(
+             (__gm__ half *)((__gm__ int8_t *)gmAddrParams.workSpaceGM + gmAddrParams.workSpaceOffset2));
+         mmOutGM2.SetGlobalBuffer(
+@@ -252,6 +259,7 @@
+                                                            WorkSpaceSplitConfig &workspaceSplitConfig,
+                                                            int64_t workspaceSplitLoopIdx, TPipe *pipe)
+ {
++    bool useDesc = (workspaceSplitConfig.loopCount == 1 && workspaceSplitConfig.M <= A8W4_DESC_MAX_M && descUsable);
+     // 第一步 读取grouplist reduceSum 计算总数据个数
+     vecConfig.M = workspaceSplitLoopIdx < workspaceSplitConfig.loopCount - 1 ? workspaceSplitConfig.notLastTaskSize :
+                                                                                workspaceSplitConfig.lastLoopTaskSize;
+@@ -265,30 +273,62 @@
+     vecConfig.curIdx = vecConfig.startIdx;
+     vecConfig.startOffset = vecConfig.startIdx * gmmSwigluQuantV2->tokenLen;
+     vecConfig.curOffset = vecConfig.startOffset;
+-    int64_t curStartIdx = vecConfig.startIdx;
+-    int64_t prevM = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
+-    int64_t totalTmp = 0;
+-    if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
+-        for (uint32_t i = 0; i < workspaceSplitConfig.rightMatrixExpertStartIndex; i++) {
+-            totalTmp += groupListGM.GetValue(i);
++    if (useDesc) {
++        vecConfig.useDesc = true; // [a8w4_compact2k4]
++        // [a8w4_compact2] Find the starting active expert by binary search on
++        // cumToken instead of walking all E experts on every AIV core.
++        if (vecConfig.taskNum > 0) {
++            int32_t numActive = descGM.GetValue(0);
++            int64_t E = gmmSwigluQuantV2BaseParams->groupNum;
++            int64_t target = vecConfig.startIdx;
++            uint32_t lo = 0;
++            uint32_t hi = static_cast<uint32_t>(numActive);
++            while (lo < hi) {
++                uint32_t mid = (lo + hi) >> 1;
++                if (descGM.GetValue(static_cast<uint32_t>(1 + E + mid + 1)) <= target) {
++                    lo = mid + 1;
++                } else {
++                    hi = mid;
++                }
++            }
++            if (lo < static_cast<uint32_t>(numActive)) {
++                vecConfig.curGroupIdx = descGM.GetValue(1 + lo);
++                vecConfig.descIdx = static_cast<int32_t>(lo); // [a8w4_compact2k4]
++                vecConfig.nextUpdateInterVal = descGM.GetValue(static_cast<uint32_t>(1 + E + lo + 1)) - target;
++            }
+         }
+-    }
+-    for (uint32_t groupIdx = workspaceSplitConfig.rightMatrixExpertStartIndex;
+-         groupIdx <= workspaceSplitConfig.rightMatrixExpertEndIndex; groupIdx++) {
+-        int64_t currM = 0;
+-        if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+-            currM = groupListGM.GetValue(groupIdx);
+-        } else {
+-            totalTmp += groupListGM.GetValue(groupIdx);
+-            currM = totalTmp;
++    } else {
++        vecConfig.useDesc = false; // [a8w4_compact2k4]
++        int64_t curStartIdx = vecConfig.startIdx;
++        int64_t prevM = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
++        int64_t totalTmp = 0;
++        if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
++            for (uint32_t i = 0; i < workspaceSplitConfig.rightMatrixExpertStartIndex; i++) {
++                totalTmp += groupListGM.GetValue(i);
++            }
+         }
+-        int64_t tempM = currM - prevM;
+-        prevM = currM;
+-        if (curStartIdx >= 0 && curStartIdx - tempM < 0) {
+-            vecConfig.curGroupIdx = groupIdx;
+-            vecConfig.nextUpdateInterVal = tempM - curStartIdx;
++        for (uint32_t groupIdx = workspaceSplitConfig.rightMatrixExpertStartIndex;
++             groupIdx <= workspaceSplitConfig.rightMatrixExpertEndIndex; groupIdx++) {
++            int64_t currM = 0;
++            if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
++                currM = groupListGM.GetValue(groupIdx);
++            } else {
++                totalTmp += groupListGM.GetValue(groupIdx);
++                currM = totalTmp;
++            }
++            int64_t tempM = currM - prevM;
++            prevM = currM;
++            // [a8w4_compact2] inactive expert contributes no rows; curStartIdx and
++            // nextUpdateInterVal are unchanged, so skip the branch.
++            if (tempM <= 0) {
++                continue;
++            }
++            if (curStartIdx >= 0 && curStartIdx - tempM < 0) {
++                vecConfig.curGroupIdx = groupIdx;
++                vecConfig.nextUpdateInterVal = tempM - curStartIdx;
++            }
++            curStartIdx -= tempM;
+         }
+-        curStartIdx -= tempM;
+     }
+     // 第三步 计算总数据量
+     vecConfig.outLoopNum =
+@@ -335,6 +375,28 @@
+ {
+     // 更新weightAuxiliaryMatrix
+     if (unlikely(vecConfig.nextUpdateInterVal == 0)) {
++        if (vecConfig.useDesc) {
++            // [a8w4_compact2k4] Advance to the next active expert via the
++            // descriptor instead of walking every inactive expert on GM.
++            int32_t E = static_cast<int32_t>(gmmSwigluQuantV2BaseParams->groupNum);
++            int32_t numActive = descGM.GetValue(0);
++            int32_t nextIdx = vecConfig.descIdx + 1;
++            if (nextIdx >= numActive) {
++                return;
++            }
++            vecConfig.descIdx = nextIdx;
++            vecConfig.curGroupIdx = descGM.GetValue(static_cast<uint32_t>(1 + nextIdx));
++            vecConfig.nextUpdateInterVal = descGM.GetValue(static_cast<uint32_t>(1 + E + nextIdx + 1)) -
++                                           descGM.GetValue(static_cast<uint32_t>(1 + E + nextIdx));
++            LocalTensor<float> weightAuxiliaryMatrixLocal = weightAuxiliaryMatrixInQueue.DeQue<float>();
++            DataCopyExtParams copyParams{1, static_cast<uint32_t>(gmmSwigluQuantV2->tokenLen * sizeof(float)), 0, 0, 0};
++            DataCopyPadExtParams<float> padParams{false, 0, 0, 0};
++            DataCopyPad(weightAuxiliaryMatrixLocal,
++                        weightAuxiliaryMatrixGM[vecConfig.curGroupIdx * gmmSwigluQuantV2->tokenLen], copyParams,
++                        padParams);
++            weightAuxiliaryMatrixInQueue.EnQue(weightAuxiliaryMatrixLocal);
++            return;
++        }
+         int64_t loop = gmmSwigluQuantV2->groupListLen - vecConfig.curGroupIdx;
+         while (loop--) {
+             if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+--- a/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h
++++ b/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h
+@@ -61,6 +61,8 @@
+     GlobalTensor<int8_t> yGm;
+     GlobalTensor<int8_t> yGm1;
+     GlobalTensor<int8_t> yGm2;
++    GlobalTensor<int64_t> groupListGM; // [a8w4_compact2]
++    GlobalTensor<int32_t> descGM;      // [a8w4_compact2]
+ 
+     uint32_t vK{0};
+     uint32_t vKAlign{0};
+@@ -72,6 +74,7 @@
+     uint32_t curCoreOuterLoopNum{0};
+     uint32_t curCoreInnerTailLoopNum{0};
+     uint32_t groupNum{0};
++    bool descUsable{false}; // [a8w4_compact2k]
+ };
+ 
+ __aicore__ inline void
+@@ -85,6 +88,15 @@
+         gmmSwigluQuantV2BaseParams = gmmSwigluQuantV2BaseParamsIN;
+         vK = gmmSwigluQuantV2BaseParams->K;
+         groupNum = static_cast<uint32_t>(gmmSwigluQuantV2BaseParams->groupNum);
++        // [a8w4_compact2] descriptor lives at the end of the user workspace
++        groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM, groupNum);
++        // [a8w4_compact2k] The inactive mmOut2 region is free for the whole
++        // loopCount==1 invocation, so the descriptor lives at its start (no host
++        // tiling change, no extra workspace).
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmAddrParams.workSpaceOffset3));
++        descUsable = (gmAddrParams.workSpaceOffset3 - gmAddrParams.workSpaceOffset2) >=
++                     static_cast<int64_t>((2 * groupNum + 2) * sizeof(int32_t));
+         // M * K * 7B (1B + 0.5B + 0.5B + 2B + 4B) <= UBsize - 256B
+         blockDim = GetBlockNum() * GetTaskRation();
+     }
+--- a/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_utils.h
++++ b/vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_impl/ai_core/tbe/custom_transformer_impl/ascendc/grouped_matmul_swiglu_quant_v2/grouped_matmul_swiglu_quant_v2_utils.h
+@@ -61,6 +61,9 @@
+ constexpr int64_t SIZE_OF_HALF_2 = 2;
+ constexpr uint8_t NUM_8 = 8;
+ constexpr float QUANT_SCALE_INT8 = 127.0f;
++// [a8w4_compact2] Only use the compact active-expert descriptor for decode-sized
++// single-workspace splits; larger M falls back to the original expert loop.
++constexpr int64_t A8W4_DESC_MAX_M = 1024;
+ 
+ constexpr MatmulConfig matmulCFGUnitFlag{false, false, true, 0, 0, 0, false, false, false, false, false, 0, 0, 0,
+                                         0, 0, 0, 0, false};
+@@ -121,6 +124,8 @@
+     int64_t innerLoopNum = 0;
+     int64_t tailLoopNum = 0;
+     int64_t nextUpdateInterVal = 0;
++    bool useDesc = false;      // [a8w4_compact2k4]
++    int32_t descIdx = 0;       // [a8w4_compact2k4] active-expert index in the descriptor
+ };
+ 
+ struct WorkSpaceSplitConfig {

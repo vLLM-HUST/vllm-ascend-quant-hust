@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-ascend-a8w4-compact"
+version = "0.1.0"
+description = "Install the A8W4 MSD compact active-expert descriptor kernel for vllm-ascend (Ascend 910B, CANN 9.1)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "cholely", email = "1427850140k@gmail.com" }]
+keywords = ["vllm", "ascend", "910b", "w4a8", "moe", "quantization"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust"
+Source = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust"
+
+[project.scripts]
+a8w4-compact = "vllm_ascend_a8w4_compact.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vllm_ascend_a8w4_compact = [
+  "bundles/*.tar.gz",
+  "bundles/assets/*.md",
+  "bundles/assets/kernel/op_kernel/*.h",
+  "bundles/assets/patches/*.patch",
+  "bundles/assets/patches/history/*.patch",
+  "bundles/assets/docs/*.md",
+  "bundles/assets/scripts/*.sh",
+  "bundles/assets/validation/*.py",
+]

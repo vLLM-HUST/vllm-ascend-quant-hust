@@ -1,0 +1,311 @@
+# 0003 - a8w4 compact active-expert descriptor + per-core distribution (batch 2)
+# Applied on top of batch 1 in csrc/gmm/grouped_matmul_swiglu_quant_v2.
+
+diff -ruN .src-new-20261118/op_host/grouped_matmul_swiglu_quant_v2_base_tiling.cpp .src-batch2-20261118/op_host/grouped_matmul_swiglu_quant_v2_base_tiling.cpp
+--- .src-new-20261118/op_host/grouped_matmul_swiglu_quant_v2_base_tiling.cpp	2026-09-16 09:05:06.730989000 +0000
++++ .src-batch2-20261118/op_host/grouped_matmul_swiglu_quant_v2_base_tiling.cpp	2026-11-18 13:36:31.626017000 +0000
+@@ -400,6 +400,12 @@
+             (workSpaceMTemp * k_ * sizeof(int8_t)) + // 第一阶段 预处理左矩阵 (mLimit_, K) * int8 * 2(double WorkSpace)
+             (DOUBLE_ROW * workSpaceMTemp * n_ *
+              SIZE_OF_HALF_2); // 第二阶段 矩阵乘结果 (2 * mLimit_, N) * fp16 * 2(double WorkSpace)
++        // [a8w4_compact2] Small active-expert descriptor at the end of the user workspace.
++        int64_t userWs = static_cast<int64_t>(workspaceSize_) - SYS_WORKSPACE_SIZE;
++        int64_t descOffset = (userWs + 31) / 32 * 32;
++        int64_t descBytes = ((2 * groupNum_ + 2) * static_cast<int64_t>(sizeof(int32_t)) + 31) / 32 * 32;
++        tilingData_.gmmSwigluQuantV2BaseParams.set_descOffset(descOffset);
++        workspaceSize_ = SYS_WORKSPACE_SIZE + descOffset + descBytes;
+     } else if (isA4W4_) {
+         int workSpaceMTemp = mLimit_ * DOUBLE_WORKSPACE_SPLIT;
+         tilingData_.gmmSwigluQuantV2BaseParams.set_workSpaceOffset1(mLimit_ * n_ * SIZE_OF_HALF_2);
+diff -ruN .src-new-20261118/op_host/grouped_matmul_swiglu_quant_v2_tiling.h .src-batch2-20261118/op_host/grouped_matmul_swiglu_quant_v2_tiling.h
+--- .src-new-20261118/op_host/grouped_matmul_swiglu_quant_v2_tiling.h	2026-09-16 09:05:06.745502000 +0000
++++ .src-batch2-20261118/op_host/grouped_matmul_swiglu_quant_v2_tiling.h	2026-11-18 13:36:31.622830000 +0000
+@@ -33,6 +33,7 @@
+ TILING_DATA_FIELD_DEF(int64_t, mLimit);
+ TILING_DATA_FIELD_DEF(int64_t, workSpaceOffset1);
+ TILING_DATA_FIELD_DEF(int64_t, workSpaceOffset2);
++TILING_DATA_FIELD_DEF(int64_t, descOffset);
+ TILING_DATA_FIELD_DEF(int64_t, quantGroupNum);
+ TILING_DATA_FIELD_DEF(int64_t, isSingleTensor);
+ TILING_DATA_FIELD_DEF(int64_t, groupListType);
+diff -ruN .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h
+--- .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h	2026-11-18 12:58:09.710705000 +0000
++++ .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_mid.h	2026-11-18 13:37:36.611556000 +0000
+@@ -99,6 +99,7 @@
+     GlobalTensor<half> mmOutGM1;
+     GlobalTensor<half> mmOutGM2;
+     GlobalTensor<int64_t> groupListGM;
++    GlobalTensor<int32_t> descGM; // [a8w4_compact2]
+     GlobalTensor<uint64_t> weightScaleGM;
+ 
+     GM_ADDR weightTensorPtr;
+@@ -127,6 +128,8 @@
+         weightGM.SetGlobalBuffer(GetTensorAddr<int4b_t>(0, gmAddrParams.weightGM));
+         weightScaleGM.SetGlobalBuffer(GetTensorAddr<uint64_t>(0, gmAddrParams.weightScaleGM));
+         groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM);
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmmSwigluQuantV2BaseParams->descOffset)); // [a8w4_compact2]
+         mmOutGM1.SetGlobalBuffer(
+             (__gm__ half *)((__gm__ int8_t *)gmAddrParams.workSpaceGM + gmAddrParams.workSpaceOffset2));
+         mmOutGM2.SetGlobalBuffer(
+@@ -181,6 +184,40 @@
+         mnConfig.k = gmmSwigluQuantV2BaseParams->K; // tilingData
+         mnConfig.n = gmmSwigluQuantV2BaseParams->N; // tilingData
+         mnConfig.blockDimN = Ceil(mnConfig.n, mnConfig.singleN);
++        // [a8w4_compact2] Compact descriptor path for the decode-sized single
++        // workspace split: distribute contiguous active-expert ranges across AIC
++        // cores, and process every tile of an assigned expert on that core. This
++        // removes the per-core O(E) scan and the per-inactive-expert setup.
++        if (workspaceSplitConfig.loopCount == 1 && workspaceSplitConfig.M <= A8W4_DESC_MAX_M) {
++            int32_t numActive = descGM.GetValue(0);
++            int64_t E = gmmSwigluQuantV2BaseParams->groupNum;
++            int64_t aStart = static_cast<int64_t>(coreIdx) * numActive / gmmSwigluQuantV2BaseParams->coreNum;
++            int64_t aEnd = static_cast<int64_t>(coreIdx + 1) * numActive / gmmSwigluQuantV2BaseParams->coreNum;
++            for (int64_t a = aStart; a < aEnd; ++a) {
++                int32_t expertIdx = descGM.GetValue(static_cast<uint32_t>(1 + a));
++                int64_t prev = descGM.GetValue(static_cast<uint32_t>(1 + E + a));
++                int64_t next = descGM.GetValue(static_cast<uint32_t>(1 + E + a + 1));
++                int64_t count = next - prev;
++                if (count <= 0) {
++                    continue;
++                }
++                uint32_t m = static_cast<uint32_t>(count * 2); // int8 activation split in 2 int4
++                mnConfig.m = m;
++                mnConfig.blockDimM = Ceil(m, mnConfig.singleM);
++                mnConfig.xBaseOffset = static_cast<uint64_t>(prev) * 2 * mnConfig.k;
++                mnConfig.yBaseOffset = static_cast<uint64_t>(prev) * 2 * mnConfig.n;
++                mnConfig.mIdx = 0;
++                mnConfig.nIdx = 0;
++                mm.SetOrgShape(m, mnConfig.n, mnConfig.k);
++                uint32_t tiles = mnConfig.blockDimM * mnConfig.blockDimN;
++                for (uint32_t t = 0; t < tiles; ++t) {
++                    mnConfig.mIdx = t / mnConfig.blockDimN;
++                    mnConfig.nIdx = t % mnConfig.blockDimN;
++                    MMCompute(static_cast<uint32_t>(expertIdx), mnConfig, workspaceSplitConfig);
++                }
++            }
++            return;
++        }
+         int32_t prevSplitValue = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
+         int32_t totalTmp = 0;
+         if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
+diff -ruN .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h
+--- .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h	2026-11-18 12:58:09.714852000 +0000
++++ .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_post.h	2026-11-18 13:37:36.613817000 +0000
+@@ -64,6 +64,7 @@
+     const GMMSwigluQuantV2BaseParams *__restrict gmmSwigluQuantV2BaseParams;
+     GlobalTensor<float> perTokenScaleGM;
+     GlobalTensor<int64_t> groupListGM;
++    GlobalTensor<int32_t> descGM; // [a8w4_compact2] compact active-expert descriptor
+     GlobalTensor<int8_t> quantOutputGM;
+     GlobalTensor<float> weightAuxiliaryMatrixGM;
+     GlobalTensor<float> quantScaleOutputGM;
+@@ -95,6 +96,8 @@
+         gmmSwigluQuantV2 = gmmSwigluIN;
+         weightAuxiliaryMatrixGM.SetGlobalBuffer(GetTensorAddr<float>(0, gmAddrParams.weightAuxiliaryMatrixGM));
+         groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM, gmmSwigluQuantV2->groupListLen);
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmmSwigluQuantV2BaseParams->descOffset)); // [a8w4_compact2]
+         mmOutGM1.SetGlobalBuffer(
+             (__gm__ half *)((__gm__ int8_t *)gmAddrParams.workSpaceGM + gmAddrParams.workSpaceOffset2));
+         mmOutGM2.SetGlobalBuffer(
+@@ -252,16 +255,7 @@
+                                                            WorkSpaceSplitConfig &workspaceSplitConfig,
+                                                            int64_t workspaceSplitLoopIdx, TPipe *pipe)
+ {
+-    // [a8w4_compact] One bulk copy instead of 2 * E blocking scalar GM reads per
+-    // core: the AIV has a UB, so the walk below can read locally.
+-    uint32_t glLen = static_cast<uint32_t>(workspaceSplitConfig.rightMatrixExpertEndIndex) + 1;
+-    TBuf<TPosition::VECCALC> glListBuf;
+-    pipe->InitBuffer(glListBuf, AlignUp<uint32_t>(glLen, 8) * sizeof(int64_t));
+-    LocalTensor<int64_t> glLocal = glListBuf.Get<int64_t>();
+-    DataCopyExtParams glCopyParams{1, static_cast<uint32_t>(glLen * sizeof(int64_t)), 0, 0, 0};
+-    DataCopyPadExtParams<int64_t> glPadParams{false, 0, 0, 0};
+-    DataCopyPad(glLocal, groupListGM, glCopyParams, glPadParams);
+-    PipeBarrier<PIPE_ALL>();
++    bool useDesc = (workspaceSplitConfig.loopCount == 1 && workspaceSplitConfig.M <= A8W4_DESC_MAX_M);
+     // 第一步 读取grouplist reduceSum 计算总数据个数
+     vecConfig.M = workspaceSplitLoopIdx < workspaceSplitConfig.loopCount - 1 ? workspaceSplitConfig.notLastTaskSize :
+                                                                                workspaceSplitConfig.lastLoopTaskSize;
+@@ -275,35 +269,69 @@
+     vecConfig.curIdx = vecConfig.startIdx;
+     vecConfig.startOffset = vecConfig.startIdx * gmmSwigluQuantV2->tokenLen;
+     vecConfig.curOffset = vecConfig.startOffset;
+-    int64_t curStartIdx = vecConfig.startIdx;
+-    int64_t prevM = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
+-    int64_t totalTmp = 0;
+-    if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
+-        for (uint32_t i = 0; i < workspaceSplitConfig.rightMatrixExpertStartIndex; i++) {
+-            totalTmp += glLocal.GetValue(i);  // [a8w4_compact] local read
++    if (useDesc) {
++        // [a8w4_compact2] Find the starting active expert by binary search on
++        // cumToken instead of walking all E experts on every AIV core.
++        if (vecConfig.taskNum > 0) {
++            int32_t numActive = descGM.GetValue(0);
++            int64_t E = gmmSwigluQuantV2BaseParams->groupNum;
++            int64_t target = vecConfig.startIdx;
++            uint32_t lo = 0;
++            uint32_t hi = static_cast<uint32_t>(numActive);
++            while (lo < hi) {
++                uint32_t mid = (lo + hi) >> 1;
++                if (descGM.GetValue(static_cast<uint32_t>(1 + E + mid + 1)) <= target) {
++                    lo = mid + 1;
++                } else {
++                    hi = mid;
++                }
++            }
++            if (lo < static_cast<uint32_t>(numActive)) {
++                vecConfig.curGroupIdx = descGM.GetValue(1 + lo);
++                vecConfig.nextUpdateInterVal = descGM.GetValue(static_cast<uint32_t>(1 + E + lo + 1)) - target;
++            }
+         }
+-    }
+-    for (uint32_t groupIdx = workspaceSplitConfig.rightMatrixExpertStartIndex;
+-         groupIdx <= workspaceSplitConfig.rightMatrixExpertEndIndex; groupIdx++) {
+-        int64_t currM = 0;
+-        if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
+-            currM = glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
+-        } else {
+-            totalTmp += glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
+-            currM = totalTmp;
+-        }
+-        int64_t tempM = currM - prevM;
+-        prevM = currM;
+-        // [a8w4_compact2] inactive expert contributes no rows; curStartIdx and
+-        // nextUpdateInterVal are unchanged, so skip the branch.
+-        if (tempM <= 0) {
+-            continue;
++    } else {
++        // [a8w4_compact] One bulk copy instead of 2 * E blocking scalar GM reads per
++        // core: the AIV has a UB, so the walk below can read locally.
++        uint32_t glLen = static_cast<uint32_t>(workspaceSplitConfig.rightMatrixExpertEndIndex) + 1;
++        TBuf<TPosition::VECCALC> glListBuf;
++        pipe->InitBuffer(glListBuf, AlignUp<uint32_t>(glLen, 8) * sizeof(int64_t));
++        LocalTensor<int64_t> glLocal = glListBuf.Get<int64_t>();
++        DataCopyExtParams glCopyParams{1, static_cast<uint32_t>(glLen * sizeof(int64_t)), 0, 0, 0};
++        DataCopyPadExtParams<int64_t> glPadParams{false, 0, 0, 0};
++        DataCopyPad(glLocal, groupListGM, glCopyParams, glPadParams);
++        PipeBarrier<PIPE_ALL>();
++        int64_t curStartIdx = vecConfig.startIdx;
++        int64_t prevM = workspaceSplitLoopIdx * workspaceSplitConfig.notLastTaskSize;
++        int64_t totalTmp = 0;
++        if (gmmSwigluQuantV2BaseParams->groupListType == 1) {
++            for (uint32_t i = 0; i < workspaceSplitConfig.rightMatrixExpertStartIndex; i++) {
++                totalTmp += glLocal.GetValue(i);  // [a8w4_compact] local read
++            }
+         }
+-        if (curStartIdx >= 0 && curStartIdx - tempM < 0) {
+-            vecConfig.curGroupIdx = groupIdx;
+-            vecConfig.nextUpdateInterVal = tempM - curStartIdx;
++        for (uint32_t groupIdx = workspaceSplitConfig.rightMatrixExpertStartIndex;
++             groupIdx <= workspaceSplitConfig.rightMatrixExpertEndIndex; groupIdx++) {
++            int64_t currM = 0;
++            if (gmmSwigluQuantV2BaseParams->groupListType == 0) {
++                currM = glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
++            } else {
++                totalTmp += glLocal.GetValue(groupIdx);  // [a8w4_compact] local read
++                currM = totalTmp;
++            }
++            int64_t tempM = currM - prevM;
++            prevM = currM;
++            // [a8w4_compact2] inactive expert contributes no rows; curStartIdx and
++            // nextUpdateInterVal are unchanged, so skip the branch.
++            if (tempM <= 0) {
++                continue;
++            }
++            if (curStartIdx >= 0 && curStartIdx - tempM < 0) {
++                vecConfig.curGroupIdx = groupIdx;
++                vecConfig.nextUpdateInterVal = tempM - curStartIdx;
++            }
++            curStartIdx -= tempM;
+         }
+-        curStartIdx -= tempM;
+     }
+     // 第三步 计算总数据量
+     vecConfig.outLoopNum =
+diff -ruN .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h
+--- .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h	2026-09-16 09:05:06.788174000 +0000
++++ .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_a8w4_msd_pre.h	2026-11-18 13:36:44.050144000 +0000
+@@ -46,6 +46,7 @@
+     TQue<QuePosition::VECOUT, BUFFER_NUM_A8W4_PRE> vecOutQueue0F;
+     TQue<QuePosition::VECOUT, BUFFER_NUM_A8W4_PRE> vecOutQueueRowSum;
+     TBuf<TPosition::VECCALC> tempBuff;
++    TBuf<TPosition::VECCALC> descBuf; // [a8w4_compact2] compact active-expert descriptor
+     const GMMSwigluQuantV2BaseParams *__restrict gmmSwigluQuantV2BaseParams;
+     LocalTensor<int8_t> xTensor;
+     LocalTensor<half> xHighHalfTensor;
+@@ -61,6 +62,8 @@
+     GlobalTensor<int8_t> yGm;
+     GlobalTensor<int8_t> yGm1;
+     GlobalTensor<int8_t> yGm2;
++    GlobalTensor<int64_t> groupListGM; // [a8w4_compact2]
++    GlobalTensor<int32_t> descGM;      // [a8w4_compact2]
+ 
+     uint32_t vK{0};
+     uint32_t vKAlign{0};
+@@ -85,6 +88,10 @@
+         gmmSwigluQuantV2BaseParams = gmmSwigluQuantV2BaseParamsIN;
+         vK = gmmSwigluQuantV2BaseParams->K;
+         groupNum = static_cast<uint32_t>(gmmSwigluQuantV2BaseParams->groupNum);
++        // [a8w4_compact2] descriptor lives at the end of the user workspace
++        groupListGM.SetGlobalBuffer((__gm__ int64_t *)gmAddrParams.groupListGM, groupNum);
++        descGM.SetGlobalBuffer((__gm__ int32_t *)((__gm__ int8_t *)gmAddrParams.workSpaceGM +
++                                                  gmmSwigluQuantV2BaseParams->descOffset));
+         // M * K * 7B (1B + 0.5B + 0.5B + 2B + 4B) <= UBsize - 256B
+         blockDim = GetBlockNum() * GetTaskRation();
+     }
+@@ -98,6 +105,7 @@
+     pipe->InitBuffer(vecOutQueueA3, BUFFER_NUM_A8W4_PRE, vK * SIZE_OF_HALF_2);    // K * 2B
+     // xLowHalfTensor, xLowHalfTensor2 and xHighFloatTensor share the same buffer
+     pipe->InitBuffer(tempBuff, vK * sizeof(float)); // K * 4B
++    pipe->InitBuffer(descBuf, (2 * groupNum + 2) * sizeof(int32_t)); // [a8w4_compact2]
+     constexpr int BUFFER_SIZE_256B = 128 * sizeof(int16_t);
+     pipe->InitBuffer(vecOutQueue0F, BUFFER_NUM_A8W4_PRE, BUFFER_SIZE_256B); // 256B
+ }
+@@ -154,6 +162,33 @@
+         SetFlag<HardEvent::S_MTE2>(EVENT_ID0);
+         WaitFlag<HardEvent::S_MTE2>(EVENT_ID0);
+         CalculateTaskInfoEachCore(curCoreTaskNum, curCoreStartOffset);
++        // [a8w4_compact2] Build the compact active-expert descriptor once for the
++        // decode-sized single-workspace split. cumToken[a] is the token offset of
++        // active expert a; inactive experts are absent.
++        if (workspaceSplitConfig.loopCount == 1 && workspaceSplitConfig.M <= A8W4_DESC_MAX_M &&
++            GetBlockIdx() == 0) {
++            LocalTensor<int32_t> descLocal = descBuf.Get<int32_t>();
++            int32_t active = 0;
++            int64_t cum = 0;
++            int64_t prevCum = 0;
++            for (uint32_t e = 0; e < groupNum; ++e) {
++                int64_t cur = groupListGM.GetValue(e);
++                int64_t count = (gmmSwigluQuantV2BaseParams->groupListType == 0) ? (cur - prevCum) : cur;
++                prevCum = cur;
++                if (count <= 0) {
++                    continue;
++                }
++                cum += count;
++                descLocal.SetValue(1 + active, static_cast<int32_t>(e));
++                descLocal.SetValue(1 + groupNum + active + 1, static_cast<int32_t>(cum));
++                ++active;
++            }
++            descLocal.SetValue(0, active);
++            descLocal.SetValue(1 + groupNum, 0);
++            DataCopyExtParams descCopyParams{1, static_cast<uint32_t>((2 * groupNum + 2) * sizeof(int32_t)), 0, 0, 0};
++            DataCopyPad(descGM, descLocal, descCopyParams);
++            PipeBarrier<PIPE_ALL>();
++        }
+         SetFlag<HardEvent::V_MTE2>(EVENT_ID0); // 0
+         SetFlag<HardEvent::MTE3_V>(EVENT_ID0); // 1
+         SetFlag<HardEvent::MTE3_V>(EVENT_ID1); // 2
+diff -ruN .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_utils.h .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_utils.h
+--- .src-new-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_utils.h	2026-09-16 09:05:06.793983000 +0000
++++ .src-batch2-20261118/op_kernel/grouped_matmul_swiglu_quant_v2_utils.h	2026-11-18 13:36:31.619170000 +0000
+@@ -61,6 +61,9 @@
+ constexpr int64_t SIZE_OF_HALF_2 = 2;
+ constexpr uint8_t NUM_8 = 8;
+ constexpr float QUANT_SCALE_INT8 = 127.0f;
++// [a8w4_compact2] Only use the compact active-expert descriptor for decode-sized
++// single-workspace splits; larger M falls back to the original expert loop.
++constexpr int64_t A8W4_DESC_MAX_M = 1024;
+ 
+ constexpr MatmulConfig matmulCFGUnitFlag{false, false, true, 0, 0, 0, false, false, false, false, false, 0, 0, 0,
+                                         0, 0, 0, 0, false};
