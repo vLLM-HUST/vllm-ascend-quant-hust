@@ -1,0 +1,3 @@
+include README.md LICENSE NOTICE
+recursive-include src/vllm_ascend_gdn_decode_fusion/bundles *
+global-exclude __pycache__ *.pyc

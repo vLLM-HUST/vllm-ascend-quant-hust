@@ -1,0 +1,87 @@
+name: Publish GDN Decode Fusion
+
+# Publishes vllm-ascend-gdn-decode-fusion to PyPI.
+# One-time setup: add a PyPI Trusted Publisher for
+#   project:   vllm-ascend-gdn-decode-fusion
+#   owner:     vLLM-HUST
+#   repo:      vllm-ascend-quant-hust
+#   workflow:  publish-gdn-decode-fusion.yml
+#   environment: pypi
+# Then publish a GitHub Release with a tag `gdn-decode-fusion-v<version>`.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-gdn-decode-fusion-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Verify the release tag matches the package version
+        run: |
+          VERSION="$(PYTHONPATH=gdn_decode_fusion/src python -c 'import vllm_ascend_gdn_decode_fusion; print(vllm_ascend_gdn_decode_fusion.__version__)')"
+          EXPECTED="gdn-decode-fusion-v${VERSION}"
+          if [ "${GITHUB_REF_NAME}" != "${EXPECTED}" ]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match ${EXPECTED}."
+            exit 1
+          fi
+          echo "GDN_DECODE_FUSION_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build the installer wheel and sdist
+        run: python -m build ./gdn_decode_fusion --outdir dist
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Install the built wheel in an isolated environment
+        run: |
+          python -m venv /tmp/gdn-install
+          /tmp/gdn-install/bin/python -m pip install --quiet --upgrade pip
+          /tmp/gdn-install/bin/python -m pip install --quiet --no-deps dist/*.whl
+          /tmp/gdn-install/bin/gdn-decode-fusion --version
+          /tmp/gdn-install/bin/gdn-decode-fusion assets
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdn-decode-fusion-dist
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vllm-ascend-gdn-decode-fusion
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: gdn-decode-fusion-dist
+          path: dist
+      - name: Publish distributions with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-ascend-gdn-decode-fusion"
+version = "0.1.0"
+description = "Install the GDN decode-path fusion patch for vllm-ascend (Ascend 910B)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "cholely", email = "1427850140k@gmail.com" }]
+keywords = ["vllm", "ascend", "910b", "gdn", "linear-attention", "triton"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust"
+Source = "https://github.com/vLLM-HUST/vllm-ascend-quant-hust"
+
+[project.scripts]
+gdn-decode-fusion = "vllm_ascend_gdn_decode_fusion.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vllm_ascend_gdn_decode_fusion = [
+  "bundles/assets/*.md",
+  "bundles/assets/patches/*.patch",
+  "bundles/assets/validation/*.py",
+]
