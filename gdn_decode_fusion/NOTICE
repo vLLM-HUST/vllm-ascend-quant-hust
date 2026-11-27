@@ -1,0 +1,9 @@
+vllm-ascend-gdn-decode-fusion
+Copyright (c) 2026 vLLM-HUST contributors
+
+This package bundles a source patch that edits files from vLLM-Ascend. Those
+files retain their original Apache-2.0 license and copyright headers; see the
+headers in the patched sources (`gdn-decode-fusion assets`).
+
+The Python installer code in this package is licensed under the Apache
+License, Version 2.0 (see LICENSE).

@@ -1,0 +1,284 @@
+diff -ruN a/vllm_ascend/ops/gdn.py b/vllm_ascend/ops/gdn.py
+--- a/vllm_ascend/ops/gdn.py	2026-11-26 04:51:21.018384527 +0000
++++ b/vllm_ascend/ops/gdn.py	2026-11-26 04:51:21.026384593 +0000
+@@ -38,9 +38,42 @@
+ from vllm_ascend.ops.triton.fla.chunk import chunk_gated_delta_rule
+ from vllm_ascend.ops.triton.fla.fused_qkvzba_split_reshape import fused_qkvzba_split_reshape_cat
+ from vllm_ascend.ops.triton.fla.utils import clear_ssm_states
++from vllm_ascend.ops.triton.gdn_decode_fused import gdn_split_qkv_norm
+ from vllm_ascend.ops.triton.mamba.causal_conv1d import extract_last_width
+ 
+ 
++def _rearrange_mixed_qkv_fused(layer, mixed_qkv):
++    """Split packed qkv and L2-normalize q/k in one Triton kernel.
++
++    ``self.rearrange_mixed_qkv`` is overridden by the model subclass
++    (``QwenGatedDeltaNetAttention``), so the fused variant is a module-level
++    helper taking the layer explicitly.  Falls back to the reference path for
++    unsupported shapes.
++    """
++    if mixed_qkv is None:
++        return None, None, None
++    tp = layer.tp_size
++    dk = layer.head_k_dim
++    dv = layer.head_v_dim
++    q_dim = layer.key_dim // tp
++    v_dim = layer.value_dim // tp
++    nk = q_dim // dk
++    nv = v_dim // dv
++    supported = (
++        mixed_qkv.dim() == 2
++        and mixed_qkv.is_contiguous()
++        and mixed_qkv.dtype in (torch.bfloat16, torch.float16)
++        and nk * dk == q_dim
++        and nv * dv == v_dim
++        and mixed_qkv.shape[1] == 2 * q_dim + v_dim
++        and all(x > 0 and (x & (x - 1)) == 0 for x in (nk, nv, dk, dv))
++    )
++    if not supported:
++        query, key, value = layer.rearrange_mixed_qkv(mixed_qkv)
++        return l2norm_fwd(query), l2norm_fwd(key), value
++    return gdn_split_qkv_norm(mixed_qkv, nk, nv, dk, dv)
++
++
+ class AscendGatedDeltaNetAttention(GatedDeltaNetAttention):
+     # Cached fused-op availability probe result, shared across all layers so the
+     # smoke call runs at most once per process.
+@@ -196,8 +229,6 @@
+             z, _ = self.in_proj_z(hidden_states)
+             z = z.reshape(z.size(0), -1, self.head_v_dim)
+             b, a = self._split_ba_for_tp(ba)
+-            b = b.contiguous()
+-            a = a.contiguous()
+         else:
+             if not self.gqa_interleaved_layout:
+                 mixed_qkvz, _ = self.in_proj_qkvz(hidden_states)
+@@ -209,8 +240,6 @@
+                 ba, _ = self.in_proj_ba(hidden_states)
+                 b, a = self._split_ba_for_tp(ba)
+ 
+-                b = b.contiguous()
+-                a = a.contiguous()
+             else:
+                 projected_states_qkvz, _ = self.in_proj_qkvz(hidden_states)
+                 projected_states_ba, _ = self.in_proj_ba(hidden_states)
+@@ -430,8 +459,19 @@
+         else:
+             mixed_qkv_non_spec = None
+ 
+-        query_spec, key_spec, value_spec = self.rearrange_mixed_qkv(mixed_qkv_spec)
+-        query_non_spec, key_non_spec, value_non_spec = self.rearrange_mixed_qkv(mixed_qkv_non_spec)
++        # Fused split+norm: decode rows are packed and L2-normalized by a
++        # single Triton kernel; prefill rows keep raw q/k because the chunk
++        # kernel applies the norm in-kernel.
++        _decode_only = attn_metadata.num_prefills == 0
++        query_spec, key_spec, value_spec = _rearrange_mixed_qkv_fused(self, mixed_qkv_spec)
++        if _decode_only:
++            query_non_spec, key_non_spec, value_non_spec = _rearrange_mixed_qkv_fused(
++                self, mixed_qkv_non_spec
++            )
++        else:
++            query_non_spec, key_non_spec, value_non_spec = self.rearrange_mixed_qkv(
++                mixed_qkv_non_spec
++            )
+ 
+         # 2. Recurrent attention
+         g, beta = DeviceOperator.fused_gdn_gating(self.A_log, a, b, self.dt_bias)
+@@ -460,8 +500,6 @@
+         # 2.1: Process the multi-query part
+         if spec_sequence_masks is not None:
+             actual_seq_lengths = attn_metadata.spec_decode_metadata.actual_seq_lengths
+-            query_spec = l2norm_fwd(query_spec)
+-            key_spec = l2norm_fwd(key_spec)
+             # Dispatches to the vllm-ascend AscendC custom operator
+             # (csrc/recurrent_gated_delta_rule), NOT the built-in CANN operator.
+             # The custom op extends dtype support (e.g. float32 state) and is
+@@ -486,10 +524,10 @@
+             assert mixed_qkv_non_spec is not None
+             assert g_non_spec is not None
+             assert beta_non_spec is not None
+-            query_decode, key_decode, value_decode = self.rearrange_mixed_qkv(mixed_qkv_non_spec[:num_decode_tokens])
++            query_decode, key_decode, value_decode = _rearrange_mixed_qkv_fused(
++                self, mixed_qkv_non_spec[:num_decode_tokens]
++            )
+             actual_seq_lengths = attn_metadata.non_spec_decode_metadata.actual_seq_lengths
+-            query_decode = l2norm_fwd(query_decode)
+-            key_decode = l2norm_fwd(key_decode)
+             core_attn_out_decode = torch.ops._C_ascend.npu_recurrent_gated_delta_rule(
+                 query=query_decode.squeeze(0),
+                 key=key_decode.squeeze(0),
+@@ -570,8 +608,6 @@
+                 )
+         elif attn_metadata.num_decodes > 0:
+             actual_seq_lengths = attn_metadata.non_spec_decode_metadata.actual_seq_lengths
+-            query_non_spec = l2norm_fwd(query_non_spec)
+-            key_non_spec = l2norm_fwd(key_non_spec)
+             # Dispatches to the vllm-ascend AscendC custom operator
+             # (csrc/recurrent_gated_delta_rule), NOT the built-in CANN operator.
+             core_attn_out_non_spec = torch.ops._C_ascend.npu_recurrent_gated_delta_rule(
+diff -ruN a/vllm_ascend/ops/triton/fused_gdn_gating.py b/vllm_ascend/ops/triton/fused_gdn_gating.py
+--- a/vllm_ascend/ops/triton/fused_gdn_gating.py	2026-11-26 04:51:21.030384626 +0000
++++ b/vllm_ascend/ops/triton/fused_gdn_gating.py	2026-11-26 04:51:21.034384659 +0000
+@@ -10,7 +10,8 @@
+ UNIFIED_BUFFER_SIZE = 1572864
+ 
+ 
+-@triton.jit(do_not_specialize=["seq_len", "NUM_HEADS", "NUM_BATCHES", "beta", "threshold", "ROW_ITER"])
++@triton.jit(do_not_specialize=["seq_len", "NUM_HEADS", "NUM_BATCHES", "beta", "threshold", "ROW_ITER",
++                               "STRIDE_A", "STRIDE_B"])
+ def fused_gdn_gating_kernel(
+     g,
+     beta_output,
+@@ -26,6 +27,8 @@
+     BLK_HEADS: tl.constexpr,
+     BLK_BATCHES: tl.constexpr,
+     ROW_ITER,
++    STRIDE_A,
++    STRIDE_B,
+ ):
+     i_b, i_s = tl.program_id(0), tl.program_id(1)
+     COL_ITER = tl.cdiv(NUM_HEADS, BLK_HEADS)
+@@ -37,12 +40,14 @@
+             head_off = col_idx * BLK_HEADS + tl.arange(0, BLK_HEADS)
+ 
+             off = batch_off[:, None] * seq_len * NUM_HEADS + i_s * NUM_HEADS + head_off[None, :]
++            off_a = batch_off[:, None] * STRIDE_A + i_s * NUM_HEADS + head_off[None, :]
++            off_b = batch_off[:, None] * STRIDE_B + i_s * NUM_HEADS + head_off[None, :]
+             head_mask = head_off < NUM_HEADS
+             mask = head_mask[None, :] & (batch_off[:, None] < NUM_BATCHES)
+ 
+             blk_A_log = tl.load(A_log + head_off, mask=head_mask)
+-            blk_a = tl.load(a + off, mask=mask)
+-            blk_b = tl.load(b + off, mask=mask)
++            blk_a = tl.load(a + off_a, mask=mask)
++            blk_b = tl.load(b + off_b, mask=mask)
+             blk_bias = tl.load(dt_bias + head_off, mask=head_mask)
+ 
+             x = blk_a.to(tl.float32) + blk_bias.to(tl.float32)[None, :]
+@@ -64,9 +69,15 @@
+     beta: float = 1.0,
+     threshold: float = 20.0,
+ ) -> tuple[torch.Tensor, torch.Tensor]:
++    # ``a``/``b`` are the two halves of the packed ``ba`` projection and are
++    # therefore row-strided views; honor their row stride instead of forcing a
++    # contiguous copy of each half on every layer.
+     batch, num_heads = a.shape
+     seq_len = 1
+ 
++    stride_a = a.stride(0) if a.dim() == 2 else num_heads
++    stride_b = b.stride(0) if b.dim() == 2 else num_heads
++
+     num_cores = get_vectorcore_num()
+ 
+     BLK_HEADS = 8
+@@ -95,5 +106,7 @@
+         BLK_HEADS=BLK_HEADS,
+         BLK_BATCHES=BLK_BATCHES,
+         ROW_ITER=ROW_ITER,
++        STRIDE_A=stride_a,
++        STRIDE_B=stride_b,
+     )
+     return g, beta_output
+diff -ruN a/vllm_ascend/ops/triton/gdn_decode_fused.py b/vllm_ascend/ops/triton/gdn_decode_fused.py
+--- a/vllm_ascend/ops/triton/gdn_decode_fused.py	1970-01-01 00:00:00.000000000 +0000
++++ b/vllm_ascend/ops/triton/gdn_decode_fused.py	2026-11-26 04:51:21.038384692 +0000
+@@ -0,0 +1,99 @@
++# SPDX-License-Identifier: Apache-2.0
++# Copyright (c) 2026 vllm-ascend-hust contributors
++"""Fused q/k/v split + q/k L2 normalization for the GDN decode path.
++
++The stock Ascend GDN path builds q/k/v with three ``reshape`` copies plus a
++``torch.cat`` (see ``rearrange_mixed_qkv``) and then launches two separate
++``l2norm_fwd`` Triton kernels.  Under graph replay that is six device kernels
++per GDN layer per step whose only job is to re-pack and rescale a few KB.
++
++This module replaces the whole sequence with one Triton kernel that reads the
++packed ``mixed_qkv`` row for one token, normalizes each q/k head row in fp32 and
++writes contiguous ``[T, Nk, Dk]`` / ``[T, Nv, Dv]`` outputs.
++"""
++
++import torch
++from vllm.triton_utils import tl, triton
++
++_L2NORM_EPS = 1e-6
++
++
++@triton.jit
++def _gdn_split_norm_kernel(
++    MQ,  # [T, S] packed q|k|v, row-contiguous
++    QO,  # [T, NK, DK]
++    KO,  # [T, NK, DK]
++    VO,  # [T, NV, DV]
++    S: tl.constexpr,
++    QD: tl.constexpr,
++    KD: tl.constexpr,
++    VD: tl.constexpr,
++    NK: tl.constexpr,
++    NV: tl.constexpr,
++    DK: tl.constexpr,
++    DV: tl.constexpr,
++    EPS: tl.constexpr,
++):
++    t = tl.program_id(0)
++    base = MQ + t * S
++
++    hk = tl.arange(0, NK)[:, None]
++    dk = tl.arange(0, DK)[None, :]
++    q_off = hk * DK + dk
++    q = tl.load(base + q_off).to(tl.float32)
++    qn = q * tl.rsqrt(tl.sum(q * q, axis=1) + EPS)[:, None]
++    tl.store(QO + t * QD + q_off, qn.to(QO.dtype.element_ty))
++
++    k_base = base + QD
++    k = tl.load(k_base + q_off).to(tl.float32)
++    kn = k * tl.rsqrt(tl.sum(k * k, axis=1) + EPS)[:, None]
++    tl.store(KO + t * QD + q_off, kn.to(KO.dtype.element_ty))
++
++    hv = tl.arange(0, NV)[:, None]
++    dv = tl.arange(0, DV)[None, :]
++    v_off = hv * DV + dv
++    v = tl.load(base + QD + KD + v_off)
++    tl.store(VO + t * VD + v_off, v)
++
++
++def gdn_split_qkv_norm(
++    mixed_qkv: torch.Tensor,
++    num_k_heads: int,
++    num_v_heads: int,
++    head_k_dim: int,
++    head_v_dim: int,
++) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
++    """Split ``[T, q|k|v]`` into contiguous ``[1, T, H, D]`` q/k/v.
++
++    q and k are L2-normalized per head row in fp32 (same math as
++    ``l2norm_fwd`` with eps=1e-6); v is copied as-is.
++    """
++    assert mixed_qkv.dim() == 2 and mixed_qkv.is_contiguous()
++    t, s = mixed_qkv.shape
++    qd = num_k_heads * head_k_dim
++    kd = qd
++    vd = num_v_heads * head_v_dim
++    assert s == qd + kd + vd, (s, qd, kd, vd)
++    dtype = mixed_qkv.dtype
++    dev = mixed_qkv.device
++    q = torch.empty((1, t, num_k_heads, head_k_dim), dtype=dtype, device=dev)
++    k = torch.empty((1, t, num_k_heads, head_k_dim), dtype=dtype, device=dev)
++    v = torch.empty((1, t, num_v_heads, head_v_dim), dtype=dtype, device=dev)
++    if t == 0:
++        return q, k, v
++    _gdn_split_norm_kernel[(t,)](
++        mixed_qkv,
++        q,
++        k,
++        v,
++        S=s,
++        QD=qd,
++        KD=kd,
++        VD=vd,
++        NK=num_k_heads,
++        NV=num_v_heads,
++        DK=head_k_dim,
++        DV=head_v_dim,
++        EPS=_L2NORM_EPS,
++    )
++    return q, k, v
